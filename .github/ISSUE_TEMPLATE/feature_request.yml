@@ -1,0 +1,31 @@
+name: Feature idea
+description: Something that would make modding easier.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. This project only works with mod content, so anything that bypasses Pavlov's restrictions can't be added.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the problem?
+      description: Tell us what you're trying to do and what gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you get around it today?
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Want to help?
+      options:
+        - label: I'd like to work on this myself.

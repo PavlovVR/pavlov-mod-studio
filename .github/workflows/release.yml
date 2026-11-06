@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the app version
+        shell: pwsh
+        run: |
+          $version = (Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) {
+            throw "Tag $env:GITHUB_REF_NAME does not match app version $version"
+          }
+      - name: Check the update signing key is set
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+            throw "Add the TAURI_SIGNING_PRIVATE_KEY secret. Installed apps only accept updates signed with it."
+          }
+      - name: Read the change list
+        run: python scripts/release_notes.py release-notes.md
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - name: Add rc.exe to PATH
+        shell: pwsh
+        run: |
+          $rc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe" | Sort-Object FullName | Select-Object -Last 1
+          Add-Content $env:GITHUB_PATH $rc.DirectoryName
+      - name: Run the tests
+        run: |
+          cd app
+          npm ci
+          npx vite build
+          cd ..
+          cargo test
+          cargo build --release -p pavlov-mod-studio
+          python tests/upload_flow.py
+          python tests/manage_flow.py
+      - name: Build the installer
+        working-directory: app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npx tauri build --config src-tauri/tauri.release.conf.json
+      - name: Write the update manifest
+        run: python scripts/update_manifest.py release
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = (Get-ChildItem release/*-setup.exe).FullName
+          $tag = $env:GITHUB_REF_NAME
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $tag --title "Pavlov Mod Studio $tag" --notes-file release-notes.md
+            gh release upload $tag $installer release/latest.json --clobber
+          } else {
+            gh release create $tag $installer release/latest.json --title "Pavlov Mod Studio $tag" --notes-file release-notes.md
+          }

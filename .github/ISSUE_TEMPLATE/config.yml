@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User guide
+    url: https://github.com/PavlovVR/pavlov-mod-studio/blob/main/docs/guide.md
+    about: Every tab explained, and how to fix the most common problems.
+  - name: Security problem
+    url: https://github.com/PavlovVR/pavlov-mod-studio/blob/main/SECURITY.md
+    about: Please report these privately.
+  - name: mod.io problem
+    url: https://mod.io/support
+    about: For problems with your mod.io account or the mod.io website.

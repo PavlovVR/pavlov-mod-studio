@@ -1,0 +1,8 @@
+/target
+*.zip
+*.state.json
+.env
+node_modules
+dist
+/release
+/release-notes.md

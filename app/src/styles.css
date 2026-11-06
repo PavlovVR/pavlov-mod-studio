@@ -1,0 +1,335 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+/* Neutral greys, following the Windows light or dark setting. Blue is reserved for focus and
+   progress, green and red for outcomes. */
+:root {
+  color-scheme: light dark;
+  --canvas: #ffffff;
+  --panel: #f7f7f8;
+  --raised: #ececee;
+  --line: #e2e2e5;
+  --line-strong: #cbcbd0;
+  --ink: #18181b;
+  --ink-muted: #52525b;
+  --ink-subtle: #6b6b74;
+  --on-ink: #ffffff;
+  --accent: #2563eb;
+  --ok: #15803d;
+  --danger: #c81e1e;
+  --on-danger: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --canvas: #161618;
+    --panel: #1c1c1f;
+    --raised: #2a2a2e;
+    --line: #2e2e33;
+    --line-strong: #44444b;
+    --ink: #f4f4f5;
+    --ink-muted: #b4b4bc;
+    --ink-subtle: #93939d;
+    --on-ink: #18181b;
+    --accent: #60a5fa;
+    --ok: #4ade80;
+    --danger: #f87171;
+    --on-danger: #18181b;
+  }
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-subtle: var(--ink-subtle);
+  --color-on-ink: var(--on-ink);
+  --color-accent: var(--accent);
+  --color-ok: var(--ok);
+  --color-danger: var(--danger);
+  --color-on-danger: var(--on-danger);
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans text-sm antialiased;
+    font-feature-settings: "cv11", "ss03";
+    overflow: hidden;
+    cursor: default;
+    /* An app's labels aren't text to select. Anything worth copying opts back in. */
+    user-select: none;
+  }
+
+  input,
+  textarea,
+  pre {
+    user-select: text;
+  }
+
+  img {
+    -webkit-user-drag: none;
+  }
+
+  h1,
+  h2 {
+    @apply text-ink;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 5px;
+    background: var(--line-strong);
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ink-subtle);
+    background-clip: padding-box;
+  }
+
+  /* Pages that scroll and pages that don't must not sit at different widths. */
+  #main {
+    scrollbar-gutter: stable;
+  }
+
+  input[type="checkbox"] {
+    @apply size-4 shrink-0;
+    accent-color: var(--ink);
+  }
+
+  /* Inline, a checkbox sits on the text baseline, which is above a table cell's middle. */
+  td > input[type="checkbox"],
+  th > input[type="checkbox"] {
+    display: block;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-transparent px-3.5 text-sm font-medium whitespace-nowrap transition-colors;
+  }
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+  .btn-primary {
+    @apply bg-ink text-on-ink;
+  }
+  .btn-primary:hover:not(:disabled) {
+    @apply opacity-85;
+  }
+  .btn-secondary {
+    @apply border-line-strong bg-canvas text-ink;
+  }
+  .btn-secondary:hover:not(:disabled) {
+    @apply bg-raised;
+  }
+  .btn-ghost {
+    @apply text-ink-muted;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    @apply bg-raised text-ink;
+  }
+  .btn-danger {
+    @apply bg-danger text-on-danger;
+  }
+  .btn-danger:hover:not(:disabled) {
+    @apply opacity-85;
+  }
+  .btn-sm {
+    @apply h-8 px-2.5 text-[13px];
+  }
+  .btn-icon {
+    @apply size-8 px-0;
+  }
+
+  .input {
+    @apply h-9 w-full rounded-md border border-line-strong bg-canvas px-3 text-sm text-ink placeholder:text-ink-subtle;
+  }
+  textarea.input {
+    @apply h-auto resize-y py-2 leading-normal;
+  }
+  .input[readonly] {
+    @apply bg-panel text-ink-muted;
+  }
+
+  .field {
+    @apply block;
+  }
+  .label {
+    @apply mb-1.5 block text-[13px] font-medium text-ink;
+  }
+  .hint {
+    @apply text-[13px] text-ink-subtle;
+  }
+
+  .card {
+    @apply rounded-lg border border-line bg-canvas;
+  }
+
+  .segmented {
+    @apply inline-flex gap-0.5 rounded-md bg-raised p-0.5;
+  }
+  .segmented button {
+    @apply h-8 cursor-pointer rounded px-3.5 text-sm font-medium text-ink-muted transition-colors;
+  }
+  .segmented button:hover {
+    @apply text-ink;
+  }
+  .segmented button[aria-pressed="true"] {
+    @apply bg-canvas text-ink shadow-xs;
+  }
+
+  .tab {
+    @apply -mb-px cursor-pointer border-b-2 border-transparent px-0.5 pb-2.5 text-sm font-medium text-ink-subtle transition-colors;
+  }
+  .tab:hover {
+    @apply text-ink;
+  }
+  .tab[aria-selected="true"] {
+    @apply border-ink text-ink;
+  }
+
+  .nav-row {
+    @apply flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ink-muted transition-colors;
+  }
+  .nav-row:hover {
+    @apply bg-raised text-ink;
+  }
+  .nav-row[aria-current] {
+    @apply bg-raised text-ink;
+  }
+
+  .notice {
+    @apply flex items-start gap-2.5 rounded-md border border-line bg-panel px-3 py-2.5 text-[13px] text-ink-muted;
+  }
+  .notice > span {
+    @apply min-w-0;
+    overflow-wrap: anywhere;
+  }
+  .notice-failed {
+    @apply border-danger/40 text-danger;
+  }
+  .notice-ok {
+    @apply border-ok/40 text-ok;
+  }
+
+  .toast {
+    @apply fixed top-4 right-4 z-40 w-[min(26rem,calc(100vw-2rem))] items-center bg-panel shadow-lg;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-ok/40 px-2 py-0.5 text-xs font-medium text-ok;
+  }
+
+  .badge-failed {
+    @apply border-danger/40 text-danger;
+  }
+  .badge-plain {
+    @apply border-line-strong text-ink-muted;
+  }
+
+  .meter {
+    @apply block h-1.5 overflow-hidden rounded-full bg-raised;
+  }
+  .meter > i {
+    @apply block h-full rounded-full bg-accent transition-[width] duration-300;
+  }
+  .meter.complete > i {
+    @apply bg-ok;
+  }
+  .meter-plain > i {
+    @apply bg-ink-subtle;
+  }
+
+  .spinner {
+    @apply inline-block size-4 shrink-0 animate-spin rounded-full border-2 border-line-strong border-t-accent motion-reduce:animate-none;
+  }
+
+  .asset-row {
+    @apply flex h-[30px] cursor-default items-center gap-2 border-l-2 border-transparent pr-3 text-[13px];
+  }
+  .asset-row:hover {
+    @apply bg-panel;
+  }
+  .asset-row-selected,
+  .asset-row-selected:hover {
+    @apply bg-accent/15;
+  }
+  #asset-tree:focus .asset-row-cursor {
+    @apply border-accent;
+  }
+  #asset-scroll:has(#asset-tree:focus-visible) {
+    @apply outline-2 -outline-offset-2 outline-accent;
+  }
+  .asset-row {
+    scroll-margin-top: 2rem;
+  }
+  .asset-name {
+    @apply min-w-0 flex-1 truncate text-left;
+    /* Arabic names keep their own reading order inside an English list. */
+    unicode-bidi: plaintext;
+  }
+  .asset-twist {
+    @apply flex w-4 shrink-0 cursor-pointer justify-center text-ink-subtle;
+  }
+  .asset-head {
+    @apply sticky top-0 z-10 flex items-center gap-2 border-b border-line bg-canvas pr-3 pl-2 py-1.5 text-xs font-medium text-ink-subtle;
+  }
+  .asset-status {
+    @apply w-24 shrink-0 truncate text-xs text-ink-subtle max-lg:w-20;
+  }
+  .asset-status.status-unused {
+    @apply text-ink font-medium;
+  }
+  .asset-status.status-in_string {
+    @apply text-accent;
+  }
+  .asset-built {
+    @apply flex w-10 shrink-0 justify-center max-lg:hidden;
+  }
+  .asset-size {
+    @apply w-16 shrink-0 text-right text-xs text-ink-subtle tabular-nums;
+  }
+
+  .data-table {
+    @apply w-full text-left text-sm;
+  }
+  .data-table th {
+    @apply border-b border-line px-2.5 py-2.5 text-[13px] font-medium text-ink-subtle lg:px-4;
+  }
+  .data-table td {
+    @apply border-b border-line px-2.5 py-2.5 lg:px-4;
+  }
+  .data-table tr:last-child td {
+    @apply border-b-0;
+  }
+}

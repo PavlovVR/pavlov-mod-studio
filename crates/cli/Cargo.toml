@@ -1,0 +1,9 @@
+[package]
+name = "pavlov-mod-studio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+pavlov-mod-core = { path = "../core" }
