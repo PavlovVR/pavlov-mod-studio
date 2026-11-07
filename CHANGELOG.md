@@ -6,6 +6,8 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+## 0.3.1
+
 ### Added
 
 - Settings shows how many mod.io requests the app has used in the last minute.
