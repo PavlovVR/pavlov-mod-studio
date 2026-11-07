@@ -6,6 +6,8 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+## 0.4.3
+
 ### Changed
 
 - A new app icon. Small sizes, such as the taskbar and title bar, show a close-up so it stays recognisable.
@@ -13,7 +15,7 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ### Fixed
 
-- A copy started for testing, such as a development build, no longer updates itself, which replaced the installed app and closed it.
+- A development or test copy of the app no longer updates itself. It could install over your real copy and close it.
 
 ## 0.4.2
 

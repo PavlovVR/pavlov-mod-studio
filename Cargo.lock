@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "pavlov-mod-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "hex",
@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "pavlov-mod-studio"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "pavlov-mod-studio-app"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "pavlov-mod-core",
