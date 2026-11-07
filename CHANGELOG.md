@@ -6,6 +6,13 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+## 0.3.2
+
+### Fixed
+
+- Opening the app again brings the open window to the front instead of starting a second copy.
+- The setup file shows the app's icon.
+
 ## 0.3.1
 
 ### Added

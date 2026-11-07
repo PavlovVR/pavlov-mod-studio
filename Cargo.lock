@@ -2727,7 +2727,7 @@ dependencies = [
 
 [[package]]
 name = "pavlov-mod-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "hex",
@@ -2741,7 +2741,7 @@ dependencies = [
 
 [[package]]
 name = "pavlov-mod-studio"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2750,7 +2750,7 @@ dependencies = [
 
 [[package]]
 name = "pavlov-mod-studio-app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "pavlov-mod-core",
@@ -2760,6 +2760,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "windows-sys 0.61.2",
 ]
@@ -4232,6 +4233,22 @@ dependencies = [
  "thiserror 2.0.21",
  "url",
  "windows",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "726b6da0dd5bd1344f84f4108a622c07d01923baacb5c803a605189672c5352f"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "windows-sys 0.61.2",
  "zbus",
 ]
 

@@ -722,9 +722,32 @@ fn start_publish(app: AppHandle, request: PublishRequest) -> Result<(), String> 
     Ok(())
 }
 
+/// Bring the open window forward when someone opens the app again.
+fn show_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// A second copy would keep its own count of mod.io requests and could publish the same mod at
+/// the same time. Development builds, and test runs given their own WebView2 folder, can sit
+/// beside an installed copy.
+fn one_copy_only() -> bool {
+    !cfg!(debug_assertions) && std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // This has to be the first plugin, so a second copy stops before anything else starts.
+    if one_copy_only() {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            show_window(app);
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

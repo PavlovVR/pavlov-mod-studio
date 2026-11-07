@@ -105,8 +105,8 @@ For maintainers.
 3. Commit, then push a matching tag:
 
 ```
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.3.2
+git push origin v0.3.2
 ```
 
 GitHub tests it, builds the installer, signs it and publishes the release with the changelog as its notes. Installed apps pick it up from there.
