@@ -13,6 +13,7 @@ pub mod package;
 pub mod pipeline;
 pub mod process;
 pub mod progress;
+pub mod share;
 pub mod source;
 pub mod targets;
 pub mod upload;

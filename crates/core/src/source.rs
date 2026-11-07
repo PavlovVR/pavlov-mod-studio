@@ -9,6 +9,7 @@ use zip::ZipArchive;
 
 use crate::api::{Api, GAME_ID};
 use crate::say;
+use crate::share::has_choice;
 
 #[derive(Serialize)]
 pub struct SourceMod {
@@ -124,6 +125,10 @@ pub fn install_zip(zip_path: &Path, project: &Path, mod_id: u64) -> Result<()> {
 }
 
 pub fn download(api: &Api, project: &Path, mod_id: u64) -> Result<()> {
+    // A share can hold part of a mod, so this would swap the real project for that part.
+    if has_choice(project, mod_id) {
+        bail!("You share this mod from this modkit, so downloading it would replace your project with the part you shared.");
+    }
     let path = format!("/games/{GAME_ID}/mods/{mod_id}");
     let details = api.send("read mod", &[], || {
         api.client()

@@ -88,7 +88,7 @@ Each choice is a client and its server.
 | **Keep hidden after upload** | Uploads without going live. Make the files live later from the Files tab |
 | **Go live on all platforms together** | Waits until every build has uploaded, instead of each going live as it finishes |
 | **Skip compression** | Packages faster, but the upload is larger |
-| **Share source with other modders** | Mods only. Lets others build this mod into theirs |
+| **Share source with other modders** | Mods only. Also shares what's ticked in the [Source tab](#source-plugins) |
 | **Show verbose log** | Opens the log with all of Unreal's output |
 
 ### What happens when you publish
@@ -197,7 +197,29 @@ Unreal only loads new plugins when it starts, so if it's open the app offers to 
 
 **Browse source plugins** at the bottom left lists content other modders have shared to build into your mods. **Download** puts a plugin in your modkit.
 
-To share your own, tick **Share source with other modders** when you publish a mod.
+### Sharing your own
+
+The **Source** tab on a content mod is where you tick exactly what other modders get. Maps and game modes can't be shared, the same as in the modkit.
+
+Nothing is shared until you tick it. Only the files you tick leave your PC, plus the plugin's `.uplugin`, which a download can't be installed without. A new file is never ticked by itself, even in a folder you ticked. The zip is checked against your list before it's sent.
+
+This is how you share part of a mod, such as the structs and interfaces other modders need, without handing over the rest.
+
+| Control | What it does |
+|---|---|
+| **Clear** | Unticks everything |
+| **Show** | Lists what your shared files need that isn't shared |
+| **Add them** | Ticks what's needed, and what that needs in turn. Nothing is added until you select this |
+| **Save as zip** | Saves exactly what would be shared, so you can look through it first |
+| **Share on mod.io** | Shares the list now, without cooking or publishing a new version |
+
+The tab tells you what's changed since your last share. It also warns when your files point at another mod, because whoever downloads them needs it too.
+
+The shared copy is named `[SOURCE]` plus your mod's name, the same as other shared plugins. Your own plugin doesn't change.
+
+To share with every release, tick **Share source with other modders** on the Publish tab. It sends the same list.
+
+Older shares stay on mod.io, and what they hold can still be downloaded. If you once shared more than you meant to, the tab points you to them, and you can delete them from the Files tab. The newest share can't be deleted, because mod.io doesn't let a live file go.
 
 ## Updates
 

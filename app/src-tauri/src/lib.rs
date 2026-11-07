@@ -22,8 +22,12 @@ use pavlov_mod_core::package::{analyze_pak, pak_files, PakReport};
 use pavlov_mod_core::pipeline::{self, discard_pending, pending_version, Release};
 use pavlov_mod_core::process::Failure;
 use pavlov_mod_core::progress::{clear_cancel, emit, request_cancel, set_sink, Event};
+use pavlov_mod_core::share::{
+    check_share, save_share, share_report, share_zip, ShareCheck, ShareReport, ShareZip,
+};
 use pavlov_mod_core::source::{browse, download, SourcePage};
 use pavlov_mod_core::targets::{find_cook, group, Target};
+use pavlov_mod_core::upload::share_now;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -599,6 +603,54 @@ async fn find_used_assets(app: AppHandle, mod_id: u64) -> Result<AssetReport, St
 }
 
 #[tauri::command]
+async fn share_files(app: AppHandle, mod_id: u64) -> Result<ShareReport, String> {
+    local(app, move |s| {
+        share_report(&PathBuf::from(s.project), mod_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn store_share(app: AppHandle, mod_id: u64, files: Vec<String>) -> Result<(), String> {
+    local(app, move |s| {
+        save_share(&PathBuf::from(s.project), mod_id, &files)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn check_shared(
+    app: AppHandle,
+    mod_id: u64,
+    files: Vec<String>,
+) -> Result<ShareCheck, String> {
+    local(app, move |s| {
+        check_share(&PathBuf::from(s.project), mod_id, &files)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_share(
+    app: AppHandle,
+    mod_id: u64,
+    name: String,
+    path: String,
+) -> Result<ShareZip, String> {
+    // The app doesn't offer this during a run, so an old Stop can't be what's waiting here.
+    clear_cancel();
+    local(app, move |s| {
+        share_zip(
+            &PathBuf::from(s.project),
+            mod_id,
+            &name,
+            &PathBuf::from(path),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn store_selection(app: AppHandle, mod_id: u64, selection: Selection) -> Result<(), String> {
     local(app, move |s| {
         save_selection(&PathBuf::from(s.project), mod_id, &selection)
@@ -722,6 +774,18 @@ fn start_publish(app: AppHandle, request: PublishRequest) -> Result<(), String> 
     Ok(())
 }
 
+#[tauri::command]
+fn start_share(app: AppHandle, mod_id: u64, changelog: String) -> Result<(), String> {
+    let settings = load_settings(app.clone())?;
+    let api = api(&app)?;
+    clear_cancel();
+    std::thread::spawn(move || {
+        let project = PathBuf::from(settings.project);
+        finish(share_now(&api, &project, mod_id, changelog));
+    });
+    Ok(())
+}
+
 /// Bring the open window forward when someone opens the app again.
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -812,6 +876,11 @@ pub fn run() {
             pending_release,
             discard_release,
             start_publish,
+            share_files,
+            store_share,
+            check_shared,
+            export_share,
+            start_share,
             cancel_run
         ])
         .run(tauri::generate_context!())

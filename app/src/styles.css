@@ -313,6 +313,9 @@
   .asset-status.status-in_string {
     @apply text-accent;
   }
+  .asset-status.status-needed {
+    @apply text-ink font-medium;
+  }
   .asset-built {
     @apply flex w-10 shrink-0 justify-center max-lg:hidden;
   }

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use pavlov_mod_core::api::{Api, API_BASE};
 use pavlov_mod_core::assets::{
@@ -16,9 +16,10 @@ use pavlov_mod_core::manage::{self, all_files, edit_details, make_live, set_logo
 use pavlov_mod_core::package::analyze_pak;
 use pavlov_mod_core::pipeline::{self, Release};
 use pavlov_mod_core::progress::set_verbose;
+use pavlov_mod_core::share::{check_share, save_share, share_report, share_zip};
 use pavlov_mod_core::source::{browse, download};
 use pavlov_mod_core::targets::{group, Target};
-use pavlov_mod_core::upload::{prepare, publish, Options, PART_SIZE};
+use pavlov_mod_core::upload::{prepare, publish, share_now, Options, PART_SIZE};
 
 const DEFAULT_ENGINE: &str = r"C:\Program Files\Epic Games\UE_5.1\Engine";
 
@@ -88,6 +89,8 @@ enum Command {
     Assets(AssetsArgs),
     /// Choose assets to leave out of a mod's builds.
     Exclude(ExcludeArgs),
+    /// Choose exactly what a mod shares with other modders, check it, and share it.
+    Share(ShareArgs),
     /// Browse source plugins.
     Browse(BrowseArgs),
     /// Download a source plugin into the modkit.
@@ -129,11 +132,37 @@ struct PublishArgs {
     /// Make all platforms live together at the end
     #[arg(long)]
     together: bool,
-    /// Also share this mod's source
+    /// Also share what's on this mod's share list
     #[arg(long)]
     share_source: bool,
     #[arg(long, default_value = API_BASE, hide = true)]
     api_base: String,
+}
+
+#[derive(clap::Args)]
+struct ShareArgs {
+    mod_id: u64,
+    /// Paths inside the plugin folder, such as Content/Api/BP_Api.uasset. Adds them to the list
+    paths: Vec<String>,
+    /// Take these paths off the list
+    #[arg(long)]
+    remove: bool,
+    /// Empty the list
+    #[arg(long)]
+    clear: bool,
+    /// Show what these paths, or the list, point at that isn't shared. Changes nothing
+    #[arg(long)]
+    check: bool,
+    /// Write the zip here instead of sharing it
+    #[arg(long)]
+    export: Option<PathBuf>,
+    /// Share the list on mod.io
+    #[arg(long)]
+    upload: bool,
+    #[arg(long, default_value = "")]
+    changelog: String,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -515,6 +544,71 @@ fn run_publish(args: PublishArgs) -> Result<()> {
     pipeline::run(&api, release, targets)
 }
 
+fn share(args: ShareArgs) -> Result<()> {
+    let report = share_report(&args.project, args.mod_id)?;
+    if args.check {
+        let files = if args.paths.is_empty() {
+            report.files
+        } else {
+            args.paths
+        };
+        let check = check_share(&args.project, args.mod_id, &files)?;
+        for link in &check.missing {
+            println!("{} needs {}", link.from, link.needs);
+        }
+        for path in &check.add {
+            println!("to add: {path}");
+        }
+        for need in &check.plugins {
+            println!(
+                "points at {}: {} shared assets, such as {}",
+                need.plugin, need.assets, need.from
+            );
+        }
+        if check.add.is_empty() && check.plugins.is_empty() {
+            println!("Nothing shared points at anything missing.");
+        }
+        return Ok(());
+    }
+    let mut files = report.files;
+    if args.clear {
+        files.clear();
+    } else if args.remove {
+        files.retain(|path| !args.paths.contains(path));
+    } else {
+        if let Some(path) = args
+            .paths
+            .iter()
+            .find(|path| !report.items.iter().any(|item| item.path == **path))
+        {
+            bail!("{path} isn't in this mod, or can't be shared");
+        }
+        files.extend(args.paths.iter().cloned());
+    }
+    if args.clear || !args.paths.is_empty() {
+        save_share(&args.project, args.mod_id, &files)?;
+    }
+    if let Some(path) = &args.export {
+        let made = share_zip(&args.project, args.mod_id, "", path)?;
+        println!(
+            "{}: {} files, {} bytes",
+            path.display(),
+            made.files,
+            made.bytes
+        );
+    } else if args.upload {
+        share_now(&token_api()?, &args.project, args.mod_id, args.changelog)?;
+    } else if files.is_empty() {
+        println!("The share list is empty.");
+    } else {
+        println!("{}", report.descriptor);
+        for path in &files {
+            println!("{path}");
+        }
+    }
+    Ok(())
+}
+
 fn set_visible(mod_id: u64, visible: bool) -> Result<()> {
     let edit = ModEdit {
         visible: Some(visible),
@@ -560,6 +654,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Share(args) => share(args),
         Command::Exclude(args) => {
             let mut selection = load_selection(&args.project, args.mod_id)?;
             if args.pin {

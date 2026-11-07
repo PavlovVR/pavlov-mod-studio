@@ -11,6 +11,7 @@ use crate::cook::{cook, CookOptions};
 use crate::definition::{check_definition, write_version};
 use crate::progress::stage;
 use crate::say;
+use crate::share::require_choice;
 use crate::targets::Target;
 use crate::upload::{
     next_version, prepare, publish, set_mod_version, upload_source, Options, PART_SIZE,
@@ -23,7 +24,7 @@ pub struct Release {
     pub compress: bool,
     /// Make all platforms live together at the end.
     pub together: bool,
-    /// Also share the plugin's source.
+    /// Also share what's on the mod's share list.
     pub share_source: bool,
 }
 
@@ -99,6 +100,10 @@ pub fn run(api: &Api, release: Release, targets: &[Target]) -> Result<()> {
 
     stage("check", None);
     check_definition(&cook_options.project, mod_id, targets)?;
+    // A cook takes minutes, so find out now rather than at the end.
+    if share_source {
+        require_choice(&cook_options.project, mod_id)?;
+    }
 
     let selection = current_selection(&cook_options.project, mod_id)?;
     let resumed = load_checkpoint(&path, &names, compress, &selection);

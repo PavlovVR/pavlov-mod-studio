@@ -6,6 +6,24 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+## 0.4.0
+
+### Added
+
+- A Source tab for choosing exactly which files other modders get. Nothing is shared until you tick it, and a new file is never ticked by itself.
+- It warns when ticked files need something you didn't tick, or another mod, and ticks what's missing in one click.
+- Share without publishing a new version, or save the share as a zip to look through first.
+- A `share` command for all of this.
+
+### Changed
+
+- Sharing source sends only what's on your list, and no longer sends the whole plugin. `--share-source` stops before cooking if the list is empty.
+
+### Fixed
+
+- Source shared with Go live on all platforms together now goes live instead of staying hidden.
+- Downloading a mod you share can't replace your project with the part you shared.
+
 ## 0.3.2
 
 ### Fixed

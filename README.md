@@ -64,6 +64,15 @@ It only leaves out what both Unreal's dependency tree and a scan of your files a
   <img src="docs/media/cook-light.png" alt="The Cook tab, showing a tree of assets with statuses after filtering to only what's used">
 </picture>
 
+### Share exactly what you choose
+
+Other modders might need one struct or interface from your mod, not the whole thing. The Source tab lists every file, and only what you tick leaves your PC. It warns when those files need something you left out, and when they point at another mod. Then share straight away, without a new build.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/source-dark.png">
+  <img src="docs/media/source-light.png" alt="The Source tab, with three files ticked and a warning that they need one more">
+</picture>
+
 ### Know exactly what broke
 
 When a build fails, you see the step, the build, Unreal's own errors and a link to the full log. **Stop** ends a cook partway. Every pak is checked before it uploads, and a build stops if it contains another mod's files, so you can't publish someone else's work by accident.
@@ -116,7 +125,7 @@ Also in the app:
 
 - **Media, comments and team.** Manage screenshots and videos, reply to and moderate comments, and see who's on the team.
 - **New mods.** Create a mod on mod.io and set up its plugin and definition in one step.
-- **Source plugins.** Browse and download what other modders share, and share yours.
+- **Source sharing.** Choose exactly which files other modders get, down to a single struct or interface. Nothing leaves your PC unless you tick it, and the app warns if those files need something you left out. Browse and download what others share too.
 - **Local testing.** Stage a build to a folder without touching mod.io.
 - **Keeps out of your way.** Unreal can stay open or closed while you publish, and the app follows your Windows light or dark setting.
 - **Stays inside mod.io's limits.** The app reads only what you open and paces itself under mod.io's request limit.

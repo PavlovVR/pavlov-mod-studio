@@ -1,7 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import morphdom from "morphdom";
@@ -38,8 +38,9 @@ type CommentPage = { comments: Comment[]; total: number; next: number | null };
 type FolderCheck = { engine: string; problems: string[] };
 type Usage = { requests: number; writes: number; request_limit: number; write_limit: number; wait_seconds: number };
 type SourceMod = { id: number; name: string; summary: string; author: string; logo: string | null; filesize: number };
-type Tab = "overview" | "publish" | "cook" | "files" | "page" | "media" | "comments" | "team" | "advanced" | "size";
+type Tab = "overview" | "publish" | "cook" | "source" | "files" | "page" | "media" | "comments" | "team" | "advanced" | "size";
 type AssetStatus = "required" | "used" | "in_string" | "other_mods" | "unused" | "unknown";
+type ShareStatus = "needed" | "changed" | "added";
 type Asset = { path: string; size: number; status: AssetStatus; used_by: string[]; uses: number[]; outside: string[] };
 type Consumer = { mod_id: number; assets: number };
 type AssetReport = {
@@ -50,7 +51,20 @@ type MissingReference = { kept: string; missing: string };
 type EditorState = { open: boolean; connected: boolean; unsaved: number };
 type TreeFolder = { path: string; name: string; folders: TreeFolder[]; assets: Asset[]; all: string[]; size: number };
 type TreeRow = { key: string; depth: number; folder: TreeFolder | null; asset: Asset | null };
-type AssetView = "all" | "left-out" | "unused" | "in_string" | "not-built" | "pinned";
+type AssetView = "all" | "left-out" | "unused" | "in_string" | "not-built" | "pinned" | "shared" | "needed" | "changed";
+type ShareReport = {
+  items: { path: string; size: number; change: "" | "changed" | "added" }[];
+  descriptor: string; files: string[]; gone: string[]; removed: string[];
+};
+type ShareCheck = {
+  missing: { from: string; needs: string }[]; add: string[];
+  plugins: { plugin: string; from: string; assets: number }[];
+};
+/** What the Source tab adds to the tree it shares with Cook. */
+type ShareState = {
+  descriptor: string; changeNote: string; check: ShareCheck | null; needed: Set<string>;
+  checking: boolean; ticket: number; changes: Map<string, "changed" | "added">; gone: string[]; removed: string[];
+};
 type CookView = {
   report: AssetReport | null;
   root: TreeFolder | null;
@@ -69,6 +83,7 @@ type CookView = {
   redo: string[][];
   built: Set<string> | null;
   note: Note | null;
+  share: ShareState | null;
 };
 type Group = "pc" | "quest" | "both";
 type Note = { ok: boolean; text: string };
@@ -98,7 +113,7 @@ type Progress =
 type Run = {
   modId: number;
   modName: string;
-  action: "publish" | "stage";
+  action: "publish" | "stage" | "share";
   inactive: boolean;
   together: boolean;
   targets: string[];
@@ -148,7 +163,7 @@ const GROUP_HINTS: Record<Group, string> = {
   both: "Publishes Windows, Linux, Oculus and Mac.",
 };
 const TAB_NAMES: Record<Tab, string> = {
-  overview: "Overview", publish: "Publish", cook: "Cook", files: "Files", page: "Page", media: "Media",
+  overview: "Overview", publish: "Publish", cook: "Cook", source: "Source", files: "Files", page: "Page", media: "Media",
   comments: "Comments", team: "Team", advanced: "Advanced", size: "Size",
 };
 const KIND_NAMES: Record<string, string> = { GameMode: "Game mode" };
@@ -180,8 +195,9 @@ const REPACK_CHOICES = [[0, "Not allowed"], [512, "With permission"], [256, "Wit
 const PATCH_MASK = 16 | 32 | 64;
 const REPACK_MASK = 128 | 256 | 512;
 const NO_BUILD = "no build";
-const STATUS_NAMES: Record<AssetStatus, string> = {
+const STATUS_NAMES: Record<AssetStatus | ShareStatus, string> = {
   required: "Required", used: "Used", in_string: "In a string", other_mods: "Other mods", unused: "Unused", unknown: "",
+  needed: "Needed", changed: "Changed", added: "New",
 };
 const STATUS_HINTS: Record<AssetStatus, string> = {
   required: "The mod can't work without this.",
@@ -263,7 +279,7 @@ const COMMANDS = {
 } as const;
 type SlotKey = "files" | "comments" | keyof typeof COMMANDS;
 const TAB_DATA: Partial<Record<Tab, SlotKey[]>> = {
-  overview: ["files", "events"], publish: ["files"], files: ["files"],
+  overview: ["files", "events"], publish: ["files"], source: ["files"], files: ["files"],
   comments: ["comments"], team: ["team"], advanced: ["deps", "metadata"],
 };
 
@@ -271,6 +287,7 @@ const TAB_DATA: Partial<Record<Tab, SlotKey[]>> = {
 const cache = new Map<number, ModData>();
 const drafts = new Map<number, PageDraft>();
 const cookViews = new Map<number, CookView>();
+const shareViews = new Map<number, CookView>();
 /** A change note belongs to the mod it was written for. */
 const changelogs = new Map<number, string>();
 
@@ -1143,7 +1160,7 @@ function failureTitle(run: Run): string {
   const failure = run.result?.failure;
   const title = failure
     ? FAILURE_NAMES[failure.kind] ?? "Build failed"
-    : STAGE_FAILURES[run.stage] ?? (run.action === "stage" ? "Staging failed" : "Publish failed");
+    : STAGE_FAILURES[run.stage] ?? (run.action === "stage" ? "Staging failed" : run.action === "share" ? "Sharing failed" : "Publish failed");
   const target = failure ? failure.target : ["cook", "upload"].includes(run.stage) ? run.target : "";
   return target ? `${title} on ${targetName(target)}` : title;
 }
@@ -1151,7 +1168,7 @@ function failureTitle(run: Run): string {
 function headline(run: Run): string {
   const build = targetName(run.target);
   if (run.result) {
-    if (run.result.ok) return run.action === "stage" ? "Staged" : run.inactive ? "Uploaded" : "Published";
+    if (run.result.ok) return run.action === "stage" ? "Staged" : run.action === "share" ? "Shared" : run.inactive ? "Uploaded" : "Published";
     if (wasStopped(run)) return "Stopped";
     return failureTitle(run);
   }
@@ -1171,6 +1188,7 @@ function resultDetail(run: Run): string {
   if (!run.result) return "";
   if (run.result.ok) {
     if (run.action === "stage") return "Your build is ready to test.";
+    if (run.action === "share") return "Other modders can now find it under Browse source plugins.";
     return run.inactive ? "Make the files live from the Files tab." : "";
   }
   if (wasStopped(run)) return run.result.message.replace(/^Stopped\.\s*/, "");
@@ -1296,7 +1314,8 @@ function runHtml(run: Run): string {
 function tabsFor(entry: Entry): Tab[] {
   if (!canManage(entry.id)) return ["overview", "files", "comments", "team"];
   const remote: Tab[] = ["overview", "files", "page", "media", "comments", "team", "advanced"];
-  return entry.local ? ["overview", "publish", "cook", ...remote.slice(1), "size"] : remote;
+  const shares: Tab[] = entry.kind === "Mod" ? ["source"] : [];
+  return entry.local ? ["overview", "publish", "cook", ...shares, ...remote.slice(1), "size"] : remote;
 }
 
 function activeTab(entry: Entry): Tab {
@@ -1310,7 +1329,7 @@ function modHtml(entry: Entry): string {
     : "";
   const tab = activeTab(entry);
   const panels: Record<Tab, () => string> = {
-    overview: () => overviewHtml(entry), publish: () => publishHtml(entry), cook: () => cookHtml(entry), files: () => filesHtml(entry),
+    overview: () => overviewHtml(entry), publish: () => publishHtml(entry), cook: () => cookHtml(entry), source: () => shareHtml(entry), files: () => filesHtml(entry),
     page: () => pageHtml(entry), media: () => mediaHtml(entry), comments: () => commentsHtml(entry),
     team: () => teamHtml(entry), advanced: () => advancedHtml(entry), size: () => sizeHtml(entry),
   };
@@ -1339,16 +1358,39 @@ function modHtml(entry: Entry): string {
 
 /* Cook: what goes into the build */
 
+function blankTree(): CookView {
+  return {
+    report: null, root: null, error: "", loading: false, analysing: false, excluded: new Set(), pinned: new Set(), expanded: new Set([""]),
+    selected: new Set(), anchor: "", cursor: "", query: "", view: "all", undo: [], redo: [], built: null, note: null, share: null,
+  };
+}
+
 function cookFor(id: number): CookView {
   let view = cookViews.get(id);
   if (!view) {
-    view = {
-      report: null, root: null, error: "", loading: false, analysing: false, excluded: new Set(), pinned: new Set(), expanded: new Set([""]),
-      selected: new Set(), anchor: "", cursor: "", query: "", view: "all", undo: [], redo: [], built: null, note: null,
-    };
+    view = blankTree();
     cookViews.set(id, view);
   }
   return view;
+}
+
+function shareFor(id: number): CookView {
+  let view = shareViews.get(id);
+  if (!view) {
+    view = blankTree();
+    view.expanded.add("Content");
+    view.share = {
+      descriptor: "", changeNote: "", check: null, needed: new Set(), checking: false, ticket: 0,
+      changes: new Map(), gone: [], removed: [],
+    };
+    shareViews.set(id, view);
+  }
+  return view;
+}
+
+/** Cook and Source use one tree, and only one of them is ever on screen. */
+function treeFor(id: number): CookView {
+  return activeTabIs("source") ? shareFor(id) : cookFor(id);
 }
 
 function buildTree(assets: Asset[]): TreeFolder {
@@ -1391,6 +1433,9 @@ function shownInView(cook: CookView, asset: Asset): boolean {
     case "in_string": return asset.status === "in_string";
     case "not-built": return Boolean(cook.built) && !cook.built!.has(asset.path);
     case "pinned": return cook.pinned.has(asset.path);
+    case "shared": return !cook.excluded.has(asset.path);
+    case "needed": return Boolean(cook.share?.needed.has(asset.path));
+    case "changed": return Boolean(cook.share?.changes.has(asset.path)) && !cook.excluded.has(asset.path);
     default: return true;
   }
 }
@@ -1435,7 +1480,8 @@ function assetRowHtml(cook: CookView, row: TreeRow, index: number): string {
   const required = row.asset?.path === "definition" || pinned;
   const name = row.folder ? row.folder.name : row.asset!.path.split("/").pop()!;
   const open = row.folder && (cook.expanded.has(row.folder.path) || cook.query.trim() || cook.view !== "all");
-  const status = row.asset ? STATUS_NAMES[row.asset.status] : `${count(paths.length - left)} of ${count(paths.length)}`;
+  const rowStatus = row.asset && (cook.share ? shareStatus(cook, row.asset) : row.asset.status);
+  const status = rowStatus ? STATUS_NAMES[rowStatus] : `${count(paths.length - left)} of ${count(paths.length)}`;
   const size = row.folder ? row.folder.size : row.asset!.size;
   const built = cook.built && row.asset ? (cook.built.has(row.asset.path) ? icon("check", 14) : "") : "";
   const selected = cook.selected.has(row.key);
@@ -1444,12 +1490,12 @@ function assetRowHtml(cook: CookView, row: TreeRow, index: number): string {
       role="treeitem" id="asset-row-${index}" data-row="${escape(row.key)}" aria-level="${row.depth + 1}" aria-selected="${selected}"
       ${row.folder ? `aria-expanded="${Boolean(open)}"` : ""} style="padding-left:${row.depth * 18 + 6}px">
       <span class="asset-twist" ${row.folder ? "data-twist" : ""}>${row.folder ? `<span class="${open ? "" : "-rotate-90"} inline-block">${icon("chevron", 14)}</span>` : ""}</span>
-      <input type="checkbox" data-cook tabindex="-1" aria-label="Include ${escape(name)} in the build" ${checked ? "checked" : ""} ${mixed ? "data-mixed" : ""} ${required ? "disabled" : ""} />
+      <input type="checkbox" data-cook tabindex="-1" aria-label="${cook.share ? `Share ${escape(name)}` : `Include ${escape(name)} in the build`}" ${checked ? "checked" : ""} ${mixed ? "data-mixed" : ""} ${required ? "disabled" : ""} ${cook.share && required ? `title="Always shared, because a download can't be installed without it"` : ""} />
       <span class="text-ink-subtle">${icon(row.folder ? "folder" : "file", 15)}</span>
       <span class="asset-name" title="${escape(name)}">${escape(name)}</span>
-      ${pinned ? `<span class="text-accent" title="Always kept">${icon("pin", 14)}</span>` : ""}
-      <span class="asset-status status-${row.asset?.status ?? "folder"}">${status}</span>
-      <span class="asset-built text-ok">${built}</span>
+      ${pinned && !cook.share ? `<span class="text-accent" title="Always kept">${icon("pin", 14)}</span>` : ""}
+      <span class="asset-status status-${rowStatus ?? "folder"}">${status}</span>
+      ${cook.share ? "" : `<span class="asset-built text-ok">${built}</span>`}
       <span class="asset-size">${megabytes(size)}</span>
     </div>`;
 }
@@ -1491,6 +1537,7 @@ function usedByHtml(cook: CookView): string {
 }
 
 function assetDetailHtml(cook: CookView, rows: TreeRow[]): string {
+  if (cook.share) return shareDetailHtml(cook, rows);
   const row = rows.find((item) => item.key === cook.cursor);
   if (!row) return `<p class="hint">Select an asset to see what uses it.</p>`;
   if (row.folder) {
@@ -1511,6 +1558,7 @@ function assetDetailHtml(cook: CookView, rows: TreeRow[]): string {
 }
 
 function cookSummary(cook: CookView): string {
+  if (cook.share) return shareSummary(cook);
   const assets = cook.report?.assets ?? [];
   const kept = assets.filter((asset) => !cook.excluded.has(asset.path));
   const size = (items: Asset[]) => items.reduce((total, asset) => total + asset.size, 0);
@@ -1670,6 +1718,7 @@ function setPinned(id: number, cook: CookView, paths: string[], pinned: boolean)
 }
 
 function saveCookSelection(id: number, cook: CookView): void {
+  if (cook.share) return saveShare(id, cook);
   window.clearTimeout(selectionTimers.get(id));
   selectionTimers.set(id, window.setTimeout(async () => {
     selectionTimers.delete(id);
@@ -1812,7 +1861,7 @@ function treeKey(event: KeyboardEvent, id: number, cook: CookView): void {
   } else if (key === "insert") {
     setIncluded(id, cook, picked(), true);
     main.querySelector<HTMLElement>("#asset-tree")?.focus();
-  } else if (key === "p" && !ctrl) {
+  } else if (key === "p" && !ctrl && !cook.share) {
     const paths = picked();
     setPinned(id, cook, paths, !paths.every((path) => cook.pinned.has(path)));
     main.querySelector<HTMLElement>("#asset-tree")?.focus();
@@ -1939,6 +1988,357 @@ async function confirmSelection(entry: Entry): Promise<boolean> {
   return true;
 }
 
+/* Source: exactly what other modders get */
+
+function shortName(path: string): string {
+  return path.split("/").pop()!;
+}
+
+/** What's on the list, without the descriptor, which always goes. */
+function sharedFiles(view: CookView): string[] {
+  const descriptor = view.share!.descriptor;
+  return (view.report?.assets ?? []).filter((asset) => asset.path !== descriptor && !view.excluded.has(asset.path)).map((asset) => asset.path);
+}
+
+function chosenCount(id: number): number {
+  const view = shareViews.get(id);
+  return view?.report ? sharedFiles(view).length : 0;
+}
+
+function shareStatus(view: CookView, asset: Asset): AssetStatus | ShareStatus {
+  const share = view.share!;
+  if (asset.path === share.descriptor) return "required";
+  if (share.needed.has(asset.path)) return "needed";
+  return view.excluded.has(asset.path) ? "unknown" : share.changes.get(asset.path) ?? "unknown";
+}
+
+function shareSummary(view: CookView): string {
+  const assets = view.report?.assets ?? [];
+  const chosen = new Set(sharedFiles(view));
+  const size = assets.filter((asset) => chosen.has(asset.path)).reduce((total, asset) => total + asset.size, 0);
+  const ticked = `${count(chosen.size)} of ${count(assets.length - 1)} files ticked`;
+  return chosen.size ? `${ticked}, ${megabytes(size)}` : ticked;
+}
+
+function shareDetailHtml(view: CookView, rows: TreeRow[]): string {
+  const row = rows.find((item) => item.key === view.cursor);
+  if (!row) return `<p class="hint">Select a file to see what it needs.</p>`;
+  if (row.folder) {
+    const chosen = row.folder.all.filter((path) => !view.excluded.has(path)).length;
+    return `<p class="font-medium break-words">${escape(row.folder.path)}</p>
+      <p class="hint">${count(row.folder.all.length)} files, ${megabytes(row.folder.size)}, ${count(chosen)} ticked.</p>`;
+  }
+  const share = view.share!;
+  const path = row.asset!.path;
+  const links = share.check?.missing ?? [];
+  const needs = links.filter((link) => link.from === path).map((link) => link.needs);
+  const neededBy = links.filter((link) => link.needs === path).map((link) => link.from);
+  const list = (title: string, paths: string[]) => paths.length ? `
+    <p class="mt-2 text-[13px] font-medium">${title}</p>
+    <ul class="hint">${paths.map((item) => `<li class="truncate" title="${escape(item)}">${escape(item)}</li>`).join("")}</ul>` : "";
+  const hint = path === share.descriptor ? "Always shared, because a download can't be installed without it."
+    : view.excluded.has(path) ? "This stays on your PC." : "This goes to whoever downloads the source.";
+  return `
+    <p class="font-medium break-words">${escape(path)}</p>
+    <p class="hint">${hint}</p>
+    ${list("Needs these, which aren't shared", needs)}
+    ${list("Needed by", neededBy)}`;
+}
+
+function shareNoticesHtml(view: CookView): string {
+  const share = view.share!;
+  const check = share.check;
+  const parts: string[] = [];
+  if (share.gone.length) {
+    const one = share.gone.length === 1;
+    parts.push(`<div class="notice mb-3">${count(share.gone.length)} ticked ${one ? "file no longer exists" : "files no longer exist"}, such as ${escape(share.gone[0])}, so ${one ? "it" : "they"} won't be shared.</div>`);
+  }
+  if (check?.add.length) {
+    const one = check.add.length === 1;
+    const first = check.missing[0];
+    const lead = one && first
+      ? `${escape(shortName(first.from))} needs ${escape(shortName(first.needs))}, which isn't shared`
+      : `${count(check.add.length)} files these need aren't shared${first ? `, such as ${escape(shortName(first.needs))} for ${escape(shortName(first.from))}` : ""}`;
+    parts.push(`
+      <div class="notice notice-failed mb-3 items-center justify-between gap-3">
+        <span>${lead}. Without ${one ? "it" : "them"}, other modders see missing references.</span>
+        <span class="flex shrink-0 gap-2">
+          <button class="btn btn-ghost btn-sm" data-action="share-show-needed">Show</button>
+          <button class="btn btn-secondary btn-sm" data-action="share-add-needed">Add ${one ? "it" : "them"}</button>
+        </span>
+      </div>`);
+  }
+  if (check?.plugins.length) {
+    const one = check.plugins.length === 1;
+    const names = check.plugins.map((need) => escape(modNameOf(Number(need.plugin.replace("UGC", ""))))).join(", ");
+    parts.push(`<div class="notice mb-3">These also point at ${one ? "another mod" : "other mods"}: ${names}. Whoever downloads them needs ${one ? "it" : "those"} too.</div>`);
+  }
+  return parts.join("");
+}
+
+/** Where this mod's source stands on mod.io, and what's changed here since. */
+function shareStateHtml(entry: Entry, view: CookView): string {
+  const share = view.share!;
+  const live = entry.info?.platforms.find((platform) => platform.platform === "source");
+  const files = dataFor(entry.id).files.value ?? [];
+  const version = live && files.find((file) => file.id === live.file_id)?.version;
+  const older = files.filter((file) => file.platforms.includes("source") && file.id !== live?.file_id);
+  const where = live ? `Shared on mod.io${version ? ` as version ${escape(version)}` : ""}.`
+    : entry.info ? "Not shared on mod.io yet." : "";
+  const changes = [...share.changes.entries()].filter(([path]) => !view.excluded.has(path));
+  const changed = changes.filter(([, change]) => change === "changed").length;
+  const added = changes.length - changed;
+  const parts = [
+    changed ? `${count(changed)} changed` : "", added ? `${count(added)} new` : "",
+    share.removed.length ? `${count(share.removed.length)} removed` : "",
+  ].filter(Boolean);
+  return `
+    <p class="mb-3 text-ink-muted">${where}${parts.length ? ` Since your last share: ${parts.join(", ")}.` : ""}</p>
+    ${older.length ? `
+      <div class="notice mb-3 items-center justify-between gap-3">
+        <span>${count(older.length)} older ${older.length === 1 ? "share is" : "shares are"} still on mod.io, and whatever ${older.length === 1 ? "it holds" : "they hold"} can still be downloaded.</span>
+        <button class="btn btn-secondary btn-sm shrink-0" data-action="share-older">Review</button>
+      </div>` : ""}`;
+}
+
+function shareHtml(entry: Entry): string {
+  const view = shareFor(entry.id);
+  const share = view.share!;
+  if (view.error && !view.report) return failedHtml(view.error);
+  if (!view.report) return `<p class="flex items-center gap-2.5 py-2 text-ink-subtle"><span class="spinner"></span>Reading the mod's files</p>`;
+  const rows = visibleRows(view);
+  const picked = selectedAssets(view, rows).length;
+  const chosen = sharedFiles(view).length;
+  const running = isRunning();
+  const updating = state.update.status === "installing";
+  const blocked = !chosen || running || state.checking || !state.hasToken || updating;
+  const label = updating ? "Updating the app" : running && state.run?.action === "share" ? "Sharing" : state.checking ? "Checking" : "Share on mod.io";
+  const views: [AssetView, string][] = [["all", "All files"], ["shared", "Ticked"], ["left-out", "Not ticked"], ["needed", "Needed"], ["changed", "Changed"]];
+  return `
+    <div id="share-state">${shareStateHtml(entry, view)}</div>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
+      <button class="btn btn-secondary btn-sm" data-action="share-clear" ${chosen ? "" : "disabled"}>Clear</button>
+      <span class="flex">
+      <button class="btn btn-ghost btn-sm btn-icon" data-action="cook-undo" aria-label="Undo" title="Undo (Ctrl+Z)" ${view.undo.length ? "" : "disabled"}>${icon("undo")}</button>
+      <button class="btn btn-ghost btn-sm btn-icon" data-action="cook-redo" aria-label="Redo" title="Redo (Ctrl+Y)" ${view.redo.length ? "" : "disabled"}><span class="inline-block -scale-x-100">${icon("undo")}</span></button>
+      <button class="btn btn-ghost btn-sm btn-icon" data-action="expand-all" aria-label="Expand all" title="Expand all">${icon("expand")}</button>
+      <button class="btn btn-ghost btn-sm btn-icon" data-action="collapse-all" aria-label="Collapse all" title="Collapse all">${icon("collapse")}</button>
+      </span>
+      ${share.checking ? `<span class="flex items-center gap-2 text-[13px] text-ink-subtle"><span class="spinner size-3.5"></span>Checking what these need</span>` : ""}
+      <span class="flex-1"></span>
+      <input id="asset-search" class="input h-8 w-28 lg:w-36" autocomplete="off" value="${escape(view.query)}" placeholder="Search files" aria-label="Search files" />
+      <select id="asset-view" class="input h-8 w-28 lg:w-36" aria-label="Show">
+        ${views.map(([id, name]) => `<option value="${id}" ${view.view === id ? "selected" : ""}>${name}</option>`).join("")}
+      </select>
+    </div>
+    <div id="share-notices">
+      ${view.note ? `<div class="mb-3">${noteHtml(view.note)}</div>` : ""}
+      ${shareNoticesHtml(view)}
+    </div>
+    <div class="card overflow-hidden">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-3 py-2 text-[13px] text-ink-muted">
+        <span class="flex-1 whitespace-nowrap" id="cook-summary">${shareSummary(view)}</span>
+        <span id="cook-picked" class="${picked ? "" : "hidden"} flex flex-wrap items-center gap-2">
+          <span class="tabular-nums">${count(picked)} selected</span>
+          <button class="btn btn-secondary btn-sm" data-action="include-picked">Tick</button>
+          <button class="btn btn-secondary btn-sm" data-action="exclude-picked">Untick</button>
+        </span>
+      </div>
+      <div id="asset-scroll" class="h-[max(16rem,calc(100vh-42rem))] overflow-y-auto">
+        <div class="asset-head"><span class="flex-1 pl-14">Name</span><span class="asset-status">Status</span><span class="asset-size">Size</span></div>
+        <div id="asset-tree" class="outline-none" role="tree" aria-label="Files" aria-multiselectable="true" tabindex="0">${treeHtml(view)}</div>
+      </div>
+      <div id="asset-detail" class="max-h-32 overflow-y-auto border-t border-line px-3 py-2 text-[13px] select-text">${shareDetailHtml(view, rows)}</div>
+    </div>
+    <p class="hint mt-2">Only what's ticked leaves your PC, and a new file is never ticked by itself. Ctrl or Shift click to select, Ctrl+A for all, Space to switch.</p>
+    <label class="field mt-5"><span class="label">Change note</span>
+      <input id="share-note" class="input" autocomplete="off" spellcheck="true" value="${escape(share.changeNote)}" placeholder="What changed in this share" /></label>
+    <div id="share-account">${state.hasToken ? "" : `
+      <div class="notice mt-4 items-center justify-between">
+        <span>Connect your mod.io account to share.</span>
+        <button class="btn btn-secondary btn-sm" data-action="settings">Open Settings</button>
+      </div>`}</div>
+    <div class="sticky bottom-0 z-10 -mx-1 mt-4 flex flex-wrap gap-2 border-t border-line bg-canvas px-1 py-3">
+      <button class="btn btn-primary" data-action="share-now" ${blocked ? "disabled" : ""}>${label}</button>
+      <button class="btn btn-secondary" data-action="share-export" title="Save exactly what would be shared, to look through first" ${chosen && !running ? "" : "disabled"}>Save as zip</button>
+    </div>`;
+}
+
+function useShare(view: CookView, report: ShareReport): void {
+  const share = view.share!;
+  const assets: Asset[] = report.items.map(({ path, size }) => ({ path, size, status: "unknown", used_by: [], uses: [], outside: [] }));
+  view.report = { assets, analysed: false, rooted: false, excluded: [], confirmed: false, pinned: [], consumers: [] };
+  view.root = buildTree(assets);
+  const chosen = new Set(report.files);
+  view.excluded = new Set(assets.filter((asset) => asset.path !== report.descriptor && !chosen.has(asset.path)).map((asset) => asset.path));
+  view.pinned = new Set([report.descriptor]);
+  Object.assign(share, {
+    descriptor: report.descriptor, gone: report.gone, removed: report.removed,
+    changes: new Map(report.items.filter((item) => item.change).map((item) => [item.path, item.change])),
+  });
+  const rows = new Set(visibleRows(view).map((row) => row.key));
+  view.selected = new Set([...view.selected].filter((key) => rows.has(key)));
+  if (!rows.has(view.cursor)) view.cursor = "";
+}
+
+async function loadShare(id: number): Promise<void> {
+  const view = shareFor(id);
+  if (view.report || view.loading) return;
+  view.loading = true;
+  try {
+    useShare(view, await invoke<ShareReport>("share_files", { modId: id }));
+    view.error = "";
+  } catch (error) {
+    view.error = String(error);
+  }
+  view.loading = false;
+  if (selectedEntry()?.id === id) render();
+  if (view.report) void checkShare(id, view);
+}
+
+/** Read the files again, keeping what's open and selected in the tree. */
+async function reloadShare(id: number): Promise<void> {
+  const view = shareViews.get(id);
+  if (!view?.report) return;
+  try {
+    await flushShare(id, view);
+    const report = await invoke<ShareReport>("share_files", { modId: id });
+    // A click while this was reading is newer than what's on disk.
+    if (shareTimers.has(id)) return;
+    useShare(view, report);
+    void checkShare(id, view);
+  } catch (error) {
+    view.note = { ok: false, text: String(error) };
+  }
+  if (state.selectedId === id) render();
+}
+
+/** A box can be ticked many times a second, and big mods take a moment to read. */
+async function checkShare(id: number, view: CookView): Promise<void> {
+  const share = view.share!;
+  const ticket = ++share.ticket;
+  const files = sharedFiles(view);
+  const show = () => {
+    if (selectedEntry()?.id === id && activeTabIs("source")) render();
+  };
+  if (!files.length) {
+    share.check = null;
+    share.needed = new Set();
+    share.checking = false;
+    return show();
+  }
+  share.checking = true;
+  show();
+  try {
+    const check = await invoke<ShareCheck>("check_shared", { modId: id, files });
+    if (ticket !== share.ticket) return;
+    share.check = check;
+    share.needed = new Set(check.add);
+  } catch (error) {
+    if (ticket !== share.ticket) return;
+    view.note = { ok: false, text: String(error) };
+  }
+  share.checking = false;
+  show();
+}
+
+const shareTimers = new Map<number, number>();
+
+function storeShare(id: number, view: CookView): Promise<void> {
+  return invoke("store_share", { modId: id, files: sharedFiles(view) });
+}
+
+function saveShare(id: number, view: CookView): void {
+  window.clearTimeout(shareTimers.get(id));
+  shareTimers.set(id, window.setTimeout(async () => {
+    shareTimers.delete(id);
+    try {
+      await storeShare(id, view);
+      void checkShare(id, view);
+    } catch (error) {
+      view.note = { ok: false, text: String(error) };
+      render();
+    }
+  }, 200));
+}
+
+/** Save a waiting change now, before something reads the list from disk. */
+async function flushShare(id: number, view: CookView): Promise<void> {
+  if (!shareTimers.has(id)) return;
+  window.clearTimeout(shareTimers.get(id));
+  shareTimers.delete(id);
+  await storeShare(id, view);
+}
+
+/** Say exactly what's about to go public. Returns false to stop. */
+async function confirmShare(entry: Entry, view: CookView): Promise<boolean> {
+  await flushShare(entry.id, view);
+  const files = sharedFiles(view);
+  const check = await invoke<ShareCheck>("check_shared", { modId: entry.id, files });
+  view.share!.check = check;
+  view.share!.needed = new Set(check.add);
+  const chosen = new Set(files);
+  const size = view.report!.assets.filter((asset) => chosen.has(asset.path)).reduce((total, asset) => total + asset.size, 0);
+  const warning = check.add.length
+    ? ` ${count(check.add.length)} ${check.add.length === 1 ? "file these need isn't" : "files these need aren't"} included, so other modders will see missing references.` : "";
+  return ask(`${count(files.length)} ${files.length === 1 ? "file" : "files"}, ${megabytes(size)}, plus the plugin's .uplugin. Anyone can download these from mod.io, and everything else stays on your PC.${warning}`, {
+    title: "Share with other modders?", kind: check.add.length ? "warning" : "info", okLabel: "Share", cancelLabel: "Cancel",
+  });
+}
+
+async function shareNow(): Promise<void> {
+  const entry = selectedEntry();
+  if (!entry || isRunning() || state.checking) return;
+  const view = shareFor(entry.id);
+  state.checking = true;
+  view.note = null;
+  render();
+  let ready = false;
+  try {
+    ready = await confirmUnrealWork() && await confirmShare(entry, view);
+  } catch (error) {
+    view.note = { ok: false, text: String(error) };
+  }
+  state.checking = false;
+  if (ready && selectedEntry()?.id !== entry.id) {
+    ready = false;
+    view.note = { ok: false, text: `Nothing was shared, because you left ${entry.name} during the check.` };
+  }
+  render();
+  if (!ready) return;
+  const run = beginRun("share", "package", "source", ["source"]);
+  try {
+    await invoke("start_share", { modId: run.modId, changelog: view.share!.changeNote });
+  } catch (error) {
+    endRun(run, false, String(error));
+    render();
+  }
+}
+
+async function exportShare(): Promise<void> {
+  const entry = selectedEntry();
+  if (!entry) return;
+  const view = shareFor(entry.id);
+  try {
+    await flushShare(entry.id, view);
+    const path = await save({ defaultPath: `UGC${entry.id}-source.zip`, filters: [{ name: "Zip", extensions: ["zip"] }] });
+    if (!path) return;
+    const made = await invoke<{ files: number; bytes: number }>("export_share", { modId: entry.id, name: entry.name, path });
+    view.note = { ok: true, text: `Saved ${count(made.files)} files, ${megabytes(made.bytes)}. This is exactly what would be shared.` };
+  } catch (error) {
+    view.note = { ok: false, text: String(error) };
+  }
+  render();
+}
+
+function shareOptionHtml(entry: Entry): string {
+  const chosen = chosenCount(entry.id);
+  const hint = chosen
+    ? `Also shares the ${count(chosen)} ${chosen === 1 ? "file" : "files"} ticked in the Source tab.`
+    : "Tick what to share in the Source tab first.";
+  return optionHtml("share-source", "Share source with other modders", hint, state.shareSource && chosen > 0, !chosen);
+}
+
 function optionHtml(id: string, label: string, hint: string, checked: boolean, disabled = false): string {
   return `
     <label class="flex items-start gap-2.5 ${disabled ? "opacity-50" : "cursor-pointer"}">
@@ -1984,7 +2384,7 @@ function publishHtml(entry: Entry): string {
           ${optionHtml("inactive", "Keep hidden after upload", "Make the files live later from the Files tab.", state.inactive)}
           ${optionHtml("together", "Go live on all platforms together", "Waits until every build has uploaded.", state.together && !state.inactive, state.inactive)}
           ${optionHtml("uncompressed", "Skip compression", "Packages faster, but the upload is larger.", !state.compress)}
-          ${entry.kind === "Mod" ? optionHtml("share-source", "Share source with other modders", "Lets others build this mod into theirs.", state.shareSource) : ""}
+          ${entry.kind === "Mod" ? shareOptionHtml(entry) : ""}
           ${optionHtml("verbose", "Show verbose log", "Opens the log with all output from Unreal, such as UnrealPak.", state.verbose)}
         </div>
         <div class="sticky bottom-0 z-10 -mx-1 flex flex-wrap gap-2 border-t border-line bg-canvas px-1 py-3">
@@ -2584,6 +2984,9 @@ async function openTabData(): Promise<void> {
   if (entry.local && (tab === "cook" || tab === "publish")) {
     void (cookViews.get(entry.id)?.report ? reloadCook(entry.id) : loadCook(entry.id));
   }
+  if (entry.local && entry.kind === "Mod" && (tab === "source" || tab === "publish")) {
+    void (shareViews.get(entry.id)?.report ? reloadShare(entry.id) : loadShare(entry.id));
+  }
   if (tab === "size") return fetchReport(entry.id);
   if (!state.hasToken) return;
   await Promise.all((TAB_DATA[tab] ?? []).map((key) => fetchSlot(entry.id, key)));
@@ -3094,11 +3497,13 @@ async function stage(): Promise<void> {
 async function publish(): Promise<void> {
   const run = beginRun("publish", "check", "", GROUP_TARGETS[state.group]);
   try {
+    const shared = shareViews.get(run.modId);
+    if (shared) await flushShare(run.modId, shared);
     await invoke("start_publish", {
       request: {
         mod_id: run.modId, group: state.group, changelog: state.changelog,
         inactive: state.inactive, compress: state.compress,
-        together: state.together, share_source: state.shareSource && selectedEntry()?.kind === "Mod",
+        together: state.together, share_source: state.shareSource && selectedEntry()?.kind === "Mod" && chosenCount(run.modId) > 0,
       },
     });
   } catch (error) {
@@ -3124,6 +3529,7 @@ async function saveSettings(): Promise<void> {
     await invoke("save_settings", { settings });
     if (settings.project !== before.project) {
       cookViews.clear();
+      shareViews.clear();
       state.selectedId = null;
     }
     state.settings = settings;
@@ -3378,10 +3784,26 @@ async function handleClick(event: MouseEvent): Promise<void> {
       state.accessHintHidden = true;
       saveFlag(ACCESS_HINT_SETTING);
       return renderRail();
-    case "cook-undo": return stepHistory(id, cookFor(id), cookFor(id).undo, cookFor(id).redo);
-    case "cook-redo": return stepHistory(id, cookFor(id), cookFor(id).redo, cookFor(id).undo);
+    case "cook-undo": return stepHistory(id, treeFor(id), treeFor(id).undo, treeFor(id).redo);
+    case "cook-redo": return stepHistory(id, treeFor(id), treeFor(id).redo, treeFor(id).undo);
+    case "share-clear": {
+      const view = shareFor(id);
+      return setIncluded(id, view, sharedFiles(view), false);
+    }
+    case "share-add-needed": {
+      const view = shareFor(id);
+      return setIncluded(id, view, view.share!.check?.add ?? [], true);
+    }
+    case "share-show-needed":
+      shareFor(id).view = "needed";
+      return render();
+    case "share-older":
+      state.fileFilter = "source";
+      return selectTab("files");
+    case "share-now": return void shareNow();
+    case "share-export": return void exportShare();
     case "expand-all": {
-      const cook = cookFor(id);
+      const cook = treeFor(id);
       const open = (folder: TreeFolder) => {
         cook.expanded.add(folder.path);
         folder.folders.forEach(open);
@@ -3390,13 +3812,13 @@ async function handleClick(event: MouseEvent): Promise<void> {
       return renderTree(cook);
     }
     case "collapse-all": {
-      const cook = cookFor(id);
+      const cook = treeFor(id);
       cook.expanded = new Set([""]);
       return renderTree(cook);
     }
     case "include-picked":
     case "exclude-picked": {
-      const cook = cookFor(id);
+      const cook = treeFor(id);
       return setIncluded(id, cook, selectedAssets(cook, visibleRows(cook)), data.action === "include-picked");
     }
     case "settings": return showSettings();
@@ -3605,8 +4027,8 @@ app.addEventListener("change", (event) => {
     void loadSource();
   }
   if (input.id === "asset-view" && state.selectedId) {
-    cookFor(state.selectedId).view = input.value as AssetView;
-    renderTree(cookFor(state.selectedId));
+    treeFor(state.selectedId).view = input.value as AssetView;
+    renderTree(treeFor(state.selectedId));
   }
   if (input.id === "file-filter") {
     state.fileFilter = input.value;
@@ -3684,7 +4106,7 @@ app.addEventListener("click", (event) => {
   const row = element.closest<HTMLElement>("[data-row]");
   const id = state.selectedId;
   if (!row || !id) return;
-  const cook = cookFor(id);
+  const cook = treeFor(id);
   const key = row.dataset.row!;
   const item = visibleRows(cook).find((candidate) => candidate.key === key);
   if (!item) return;
@@ -3706,11 +4128,11 @@ app.addEventListener("dblclick", (event) => {
   const element = event.target as HTMLElement;
   const key = element.closest<HTMLElement>("[data-row]")?.dataset.row;
   if (element.closest("[data-twist]") || element.matches("[data-cook]")) return;
-  if (key?.startsWith("d:") && state.selectedId) toggleFolder(cookFor(state.selectedId), key.slice(2));
+  if (key?.startsWith("d:") && state.selectedId) toggleFolder(treeFor(state.selectedId), key.slice(2));
 });
 
 app.addEventListener("keydown", (event) => {
-  if ((event.target as HTMLElement).id === "asset-tree" && state.selectedId) treeKey(event, state.selectedId, cookFor(state.selectedId));
+  if ((event.target as HTMLElement).id === "asset-tree" && state.selectedId) treeKey(event, state.selectedId, treeFor(state.selectedId));
 });
 
 modal.addEventListener("cancel", (event) => {
@@ -3792,9 +4214,10 @@ app.addEventListener("input", (event) => {
     renderRail();
   }
   if (input.id === "asset-search" && state.selectedId) {
-    cookFor(state.selectedId).query = input.value;
-    renderTree(cookFor(state.selectedId));
+    treeFor(state.selectedId).query = input.value;
+    renderTree(treeFor(state.selectedId));
   }
+  if (input.id === "share-note" && state.selectedId) shareFor(state.selectedId).share!.changeNote = input.value;
   if (input.id === "source-search") {
     state.source.search = input.value;
     window.clearTimeout(searchTimer);
@@ -3835,6 +4258,7 @@ await listen<Progress>("progress", ({ payload }) => {
         changelogs.delete(run.modId);
         if (state.selectedId === run.modId) state.changelog = "";
       }
+      if (payload.ok && run.action === "share") shareFor(run.modId).share!.changeNote = "";
       // Any run can change what's in a build, whether or not it finished.
       dataFor(run.modId).reports = {};
       render();
@@ -3845,10 +4269,11 @@ await listen<Progress>("progress", ({ payload }) => {
 });
 
 async function refreshAfterRun(run: Run): Promise<void> {
-  if (run.action !== "publish") return void refreshPending().then(render);
+  if (run.action === "stage") return void refreshPending().then(render);
   cache.delete(run.modId);
   await showChange(run.modId);
   await refreshPending();
+  await reloadShare(run.modId);
   render();
   await openTabData();
 }
@@ -3861,6 +4286,7 @@ window.addEventListener("focus", async () => {
   await loadMods();
   const entry = selectedEntry();
   if (entry?.local && state.view === "mod" && ["cook", "publish"].includes(activeTab(entry))) await reloadCook(entry.id);
+  if (entry?.local && state.view === "mod" && ["source", "publish"].includes(activeTab(entry))) await reloadShare(entry.id);
   render();
   checkingFiles = false;
 });

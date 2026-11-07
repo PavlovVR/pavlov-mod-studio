@@ -136,4 +136,52 @@ hidden_root = root / "hidden"; (hidden_root / "Plugins").mkdir(parents=True)
 r = cli("create", "Test map", "Map", "--summary", "A map", "--logo", str(logo), "--hidden", "--project", str(hidden_root), "--engine", str(root / "no-engine"))
 assert 'name="visible"' in S["created"], "hidden mods must send visible"
 r = cli("create", "ab", "Map", "--summary", "x", "--logo", str(logo), "--project", str(root)); assert r.returncode != 0 and "3-32" in r.stderr
+# Sharing sends what's on the list and nothing else, and only a real choice gets that far.
+import io, struct
+plugin = root / "Plugins/UGC99"
+for name, text in {"Content/Api/BP_Api.uasset": "api", "Content/Api/S_Data.uasset": "data", "Content/Api/S_Data.uexp": "split",
+                   "Content/Secret/M_Skin.uasset": "secret", "Resources/Icon128.png": "png", "NOTES.md": "private",
+                   "Saved/Config/private.ini": "private"}.items():
+    (plugin / name).parent.mkdir(parents=True, exist_ok=True); (plugin / name).write_text(text)
+(plugin / "UGC99.uplugin").write_text('{"FileVersion": 3, "FriendlyName": "UGC99", "CanContainContent": true}')
+(plugin / "Content/definition.uasset").write_bytes(struct.pack("<I", 11) + b"Pavlov_Mod" + bytes(1))
+project = ("--project", str(root))
+
+def received():
+    with zipfile.ZipFile(io.BytesIO(S["parts"][0])) as z:
+        return sorted(z.namelist()), json.loads(z.read("UGC99.uplugin"))
+
+def fresh():
+    S["parts"] = {}; S["sessions"] = 0; S.pop("completed", None); S["modfile"] = None
+
+fresh()
+r = cli("share", "99", *project); assert r.returncode == 0 and "share list is empty" in r.stdout, r.stdout
+r = cli("share", "99", "--upload", *project); assert r.returncode != 0 and "share list is empty" in r.stderr, r.stderr
+assert S["sessions"] == 0, "nothing may be sent without a choice"
+r = cli("share", "99", "Saved/Config/private.ini", *project); assert r.returncode != 0, r.stdout
+r = cli("share", "99", "../other", *project); assert r.returncode != 0, r.stdout
+r = cli("share", "99", "Content/Api/BP_Api.uasset", "Content/Api/S_Data.uasset", *project); assert r.returncode == 0, r.stderr
+r = cli("share", "99", "--upload", "--changelog", "API only", *project); print(r.stdout, r.stderr); assert r.returncode == 0, r.stderr
+names, descriptor = received()
+assert names == ["Content/Api/BP_Api.uasset", "Content/Api/S_Data.uasset", "Content/Api/S_Data.uexp", "UGC99.uplugin"], names
+assert descriptor["FriendlyName"] == "[SOURCE] UGC99" and descriptor["CanContainContent"] is True, descriptor
+assert S["modfile"]["platforms[]"] == ["source"] and S["modfile"]["active"] == ["true"], S["modfile"]
+assert S["modfile"]["changelog"] == ["API only"] and S["modfile"]["version"] == ["7"], S["modfile"]
+assert "checked against your list" in r.stdout and "Upload Complete" in r.stdout
+assert json.loads((plugin / "UGC99.uplugin").read_text())["FriendlyName"] == "UGC99", "the real plugin must not change"
+
+# A zip can be looked through first, and it matches what would be sent.
+out = root / "check.zip"
+r = cli("share", "99", "--export", str(out), *project); assert r.returncode == 0, r.stderr
+with zipfile.ZipFile(out) as z: assert sorted(z.namelist()) == names
+
+# The check is read-only and sees what's missing.
+(plugin / "Content/Api/BP_Api.uasset").write_bytes(b"x\0/UGC99/Secret/M_Skin\0/UGC12/Lib/F\0")
+r = cli("share", "99", "--check", *project); assert r.returncode == 0, r.stderr
+assert "Content/Api/BP_Api.uasset needs Content/Secret/M_Skin.uasset" in r.stdout, r.stdout
+assert "points at UGC12" in r.stdout, r.stdout
+
+# Downloading your own shared mod would swap the real project for the shared part.
+r = cli("download", "99", *project); assert r.returncode != 0 and "replace your project" in r.stderr, r.stderr
+assert (plugin / "NOTES.md").is_file()
 print("ALL PASSED")

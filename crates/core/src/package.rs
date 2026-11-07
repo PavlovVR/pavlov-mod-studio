@@ -1,16 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io;
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 
 use crate::process::{run_tool, Failure, Tool, ToolRun};
+use crate::progress::check_cancel;
 use crate::targets::Cook;
 
 /// Same layout as the modkit's zip: metadata.json and the pak at the root.
@@ -178,31 +179,49 @@ pub fn analyze_pak(engine: &Path, pak: &Path) -> Result<PakReport> {
     Ok(report)
 }
 
-/// Zip a plugin folder for sharing, leaving out generated files.
-pub fn zip_folder(dir: &Path, out: &Path, skip: &[&str]) -> Result<()> {
+/// Zip exactly these files, plus one written from text, and return the zip's size. The zip is read
+/// back before it's kept, so anything but this list can't leave the PC. The same files always
+/// make the same bytes, which is what lets a stopped upload resume.
+pub fn zip_exact(out: &Path, text: (&str, &str), files: &[(String, PathBuf)]) -> Result<u64> {
     let tmp = out.with_extension("tmp");
-    let mut zip = ZipWriter::new(File::create(&tmp)?);
+    let result = write_exact(&tmp, text, files);
+    if result.is_err() {
+        fs::remove_file(&tmp).ok();
+    }
+    result?;
+    fs::rename(&tmp, out)?;
+    Ok(fs::metadata(out)?.len())
+}
+
+fn write_exact(tmp: &Path, text: (&str, &str), files: &[(String, PathBuf)]) -> Result<()> {
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(DateTime::default())
         .large_file(true);
-    let mut folders = vec![dir.to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        for entry in fs::read_dir(&folder)? {
-            let path = entry?.path();
-            let relative = path.strip_prefix(dir)?.to_string_lossy().replace('\\', "/");
-            if skip.iter().any(|name| relative == *name) {
-                continue;
-            }
-            if path.is_dir() {
-                folders.push(path);
-            } else {
-                zip.start_file(relative, options)?;
-                io::copy(&mut File::open(&path)?, &mut zip)?;
-            }
-        }
+    let mut sorted: Vec<&(String, PathBuf)> = files.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut zip = ZipWriter::new(File::create(tmp)?);
+    zip.start_file(text.0, options)?;
+    zip.write_all(text.1.as_bytes())?;
+    for (name, path) in sorted {
+        // Everything in a big mod can take minutes to compress.
+        check_cancel()?;
+        zip.start_file(name.as_str(), options)?;
+        let mut file = File::open(path).with_context(|| format!("reading {name}"))?;
+        io::copy(&mut file, &mut zip)?;
     }
     zip.finish()?;
-    fs::rename(&tmp, out)?;
+
+    let expected: BTreeSet<&str> = files
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .chain([text.0])
+        .collect();
+    let archive = ZipArchive::new(File::open(tmp)?).context("could not read the zip back")?;
+    let found: BTreeSet<&str> = archive.file_names().collect();
+    if found != expected || archive.len() != expected.len() {
+        bail!("the zip didn't match the list of files, so nothing was shared");
+    }
     Ok(())
 }
 

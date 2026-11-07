@@ -39,7 +39,7 @@ pavlov-mod-studio publish <mod id> <group> --project <modkit folder> --changelog
 | `--inactive` | Uploads without making the files live |
 | `--together` | Makes all platforms live together at the end |
 | `--no-compress` | Stores paks uncompressed in the zip |
-| `--share-source` | Also shares this mod's source |
+| `--share-source` | Also shares what's on this mod's share list. Stops before cooking if the list is empty |
 
 If an upload stops, running the same command again resumes that release. It skips finished builds and sends only the missing chunks.
 
@@ -110,6 +110,10 @@ If an upload stops, running the same command again resumes that release. It skip
 |---|---|
 | `browse [search]` | Browses source plugins. Add `--sort` to change the order |
 | `download <mod>` | Downloads a source plugin into the modkit |
+| `share <mod> [paths]` | Adds files to the share list, or shows it. Paths are inside the plugin folder, such as `Content/Api/BP_Api.uasset`. Takes `--remove` and `--clear` |
+| `share <mod> [paths] --check` | Shows what these files, or the list, need that isn't shared. Changes nothing |
+| `share <mod> --export <file>` | Saves exactly what would be shared as a zip |
+| `share <mod> --upload` | Shares the list on mod.io, without cooking. Takes `--changelog` |
 
 ### Unreal and your account
 

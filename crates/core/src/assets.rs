@@ -128,13 +128,13 @@ impl SavedAnalysis {
     }
 }
 
-struct Source {
-    path: String,
-    file: PathBuf,
-    size: u64,
+pub(crate) struct Source {
+    pub(crate) path: String,
+    pub(crate) file: PathBuf,
+    pub(crate) size: u64,
 }
 
-fn plugin_name(mod_id: u64) -> String {
+pub(crate) fn plugin_name(mod_id: u64) -> String {
     format!("UGC{mod_id}")
 }
 
@@ -145,7 +145,7 @@ fn content_dir(project: &Path, mod_id: u64) -> PathBuf {
         .join("Content")
 }
 
-fn store_dir(project: &Path) -> PathBuf {
+pub(crate) fn store_dir(project: &Path) -> PathBuf {
     project.join("Saved/PavlovModStudio")
 }
 
@@ -161,7 +161,7 @@ fn walk(folder: &Path, found: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn sources(project: &Path, mod_id: u64) -> Result<Vec<Source>> {
+pub(crate) fn sources(project: &Path, mod_id: u64) -> Result<Vec<Source>> {
     let content = content_dir(project, mod_id);
     let mut files = Vec::new();
     walk(&content, &mut files)?;
@@ -201,16 +201,16 @@ fn without_number(name: &str) -> &str {
 }
 
 /// Everything needed to turn text found in a file into assets of this mod.
-struct Lookup {
+pub(crate) struct Lookup {
     mount: String,
     paths: HashSet<String>,
     families: HashMap<String, Vec<String>>,
     folders: HashMap<String, Vec<String>>,
-    bare: HashMap<String, Vec<String>>,
+    pub(crate) bare: HashMap<String, Vec<String>>,
 }
 
 impl Lookup {
-    fn new(mount: String, paths: &[&str]) -> Self {
+    pub(crate) fn new(mount: String, paths: &[&str]) -> Self {
         let mut lookup = Self {
             mount,
             paths: paths.iter().map(|p| p.to_string()).collect(),
@@ -248,7 +248,7 @@ impl Lookup {
     }
 
     /// Read one run of text, which may hold a path, an object path, or plain names.
-    fn read(&self, text: &str, found: &mut HashSet<String>) {
+    pub(crate) fn read(&self, text: &str, found: &mut HashSet<String>) {
         if let Some(start) = text.find(&self.mount) {
             let path = &text[start + self.mount.len()..];
             let path = path.split(['.', ':']).next().unwrap_or(path);
@@ -271,7 +271,7 @@ impl Lookup {
     }
 }
 
-fn ends_text(unit: u32) -> bool {
+pub(crate) fn ends_text(unit: u32) -> bool {
     unit < 0x20
         || matches!(
             char::from_u32(unit),

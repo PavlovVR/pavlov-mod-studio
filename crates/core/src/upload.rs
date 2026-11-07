@@ -13,8 +13,9 @@ use serde_json::Value;
 use crate::api::{text_form, Api, GAME_ID};
 use crate::definition::mod_kind;
 use crate::manage::make_live;
-use crate::package::{audit_pak, build_zip, sha256, zip_folder};
+use crate::package::{audit_pak, build_zip, sha256};
 use crate::progress::{check_cancel, emit, Event};
+use crate::share::{mark_shared, share_zip};
 use crate::targets::{find_cook, plugin_rules, Target};
 
 /// mod.io requires exactly 50 MiB per part, except the last.
@@ -64,6 +65,7 @@ impl State {
 }
 
 struct ModBlob {
+    name: String,
     mod_type: String,
     engine_version: String,
     version: i64,
@@ -194,7 +196,7 @@ pub fn publish(api: &Api, options: &Options, zips: &[(Target, PathBuf)]) -> Resu
     Ok(())
 }
 
-/// Share the plugin's source on mod.io, for content mods only like the modkit.
+/// Share what the modder chose on mod.io, for content mods only like the modkit.
 pub fn upload_source(api: &Api, options: &Options) -> Result<()> {
     let plugin = format!("UGC{}", options.mod_id);
     let dir = options.project.join("Plugins").join(&plugin);
@@ -206,14 +208,19 @@ pub fn upload_source(api: &Api, options: &Options) -> Result<()> {
     let stage = options.project.join("Saved/Cooked/Workshop").join(&plugin);
     fs::create_dir_all(&stage)?;
     let zip = stage.join("source.upload.zip");
-    zip_folder(&dir, &zip, &["Saved", "Intermediate", "Binaries"])?;
     let mod_path = format!("/games/{GAME_ID}/mods/{}", options.mod_id);
     let blob = read_mod_blob(api, &mod_path)?;
+    let made = share_zip(&options.project, options.mod_id, &blob.name, &zip)?;
+    crate::say!(
+        "[source] {} files, {} bytes, checked against your list",
+        made.files,
+        made.bytes
+    );
     let version = options
         .version
         .clone()
         .unwrap_or_else(|| blob.version.to_string());
-    upload_target(
+    let uploaded = upload_target(
         api,
         options,
         &mod_path,
@@ -222,6 +229,35 @@ pub fn upload_source(api: &Api, options: &Options) -> Result<()> {
         &version,
         &blob,
     )?;
+    // Everything else has gone live by now, and this would otherwise stay hidden for good.
+    if options.together && !options.inactive {
+        if let Some(id) = uploaded {
+            make_live(api, options.mod_id, id)?;
+        }
+    }
+    mark_shared(&options.project, options.mod_id)?;
+    Ok(())
+}
+
+/// Share without building anything, for when only the shared files changed.
+pub fn share_now(api: &Api, project: &Path, mod_id: u64, changelog: String) -> Result<()> {
+    let options = Options {
+        project: project.to_path_buf(),
+        engine: PathBuf::new(),
+        mod_id,
+        version: None,
+        changelog,
+        inactive: false,
+        compress: true,
+        skip_existing: false,
+        together: false,
+        part_size: PART_SIZE,
+        poll_seconds: 10,
+        skip_audit: true,
+    };
+    crate::progress::stage("package", None);
+    upload_source(api, &options)?;
+    crate::say!("Upload Complete");
     Ok(())
 }
 
@@ -233,6 +269,7 @@ fn read_mod_blob(api: &Api, mod_path: &str) -> Result<ModBlob> {
     let missing =
         || anyhow!("mod metadata_blob is missing fields; update the mod from the editor first");
     Ok(ModBlob {
+        name: details["name"].as_str().unwrap_or_default().to_string(),
         mod_type: field("ModType").ok_or_else(missing)?,
         engine_version: field("EngineVersion").ok_or_else(missing)?,
         version: blob["VersionUUID"].as_i64().ok_or_else(missing)?,
