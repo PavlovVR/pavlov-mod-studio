@@ -6,6 +6,27 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+## 0.4.2
+
+### Added
+
+- A new mod or downloaded source plugin appears in an open Unreal straight away, with no restart. If that can't be done, the app offers a restart like before.
+- A `load-in-editor` command.
+- Source plugins say whether they're installed, and **Update** appears when mod.io has a newer version.
+- An **Installed** filter that lists only the source plugins in your modkit, so an update is easy to find.
+- Source plugins show whether they're built for PC, Quest or both, and link to their mod.io page.
+- A Trending sort and a Refresh button for source plugins.
+
+### Changed
+
+- A logo is now optional when creating a mod. Without one the mod gets Pavlov's default from your modkit, the same as in the modkit.
+- The staging folder starts on the same folder as the modkit, so you can stage a build without opening Settings first.
+- Your own mods in the source plugin list say so, and are never offered as an update.
+
+### Removed
+
+- Skip compression and `--no-compress`, because they saved seconds and made every upload larger.
+
 ## 0.4.1
 
 ### Added

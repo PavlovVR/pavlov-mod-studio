@@ -105,8 +105,8 @@ For maintainers.
 3. Commit, push `main`, then push a matching tag:
 
 ```
-git tag v0.4.1
-git push origin v0.4.1
+git tag v0.4.2
+git push origin v0.4.2
 ```
 
 GitHub builds and signs the installer while CI tests that commit, then publishes the release with the changelog as its notes. If CI fails, nothing is published. Installed apps pick it up from there.

@@ -18,6 +18,15 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         S["auth"].add(self.headers.get("Authorization"))
         p = urlparse(self.path).path
+        if p == "/source.zip":
+            b = S["source_zip"]; self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
+        if self.headers.get("X-Modio-Platform") == "source":
+            item = {"id": 55, "name": "Trees", "profile_url": "https://mod.io/g/pavlov/m/trees", "platforms": [{"platform": "source"}], "submitted_by": {"username": "someone"},
+                    "modfile": {"id": S["source_file"], "date_added": 1, "filesize": 10, "download": {"binary_url": base + "/source.zip"}}}
+            if p.endswith("/mods"):
+                S["browse"] = parse_qs(urlparse(self.path).query)
+                return self.out(200, {"data": [item], "result_total": 1})
+            return self.out(200, item)
         if p == "/me/mods": return self.out(200, {"data": [{"id": 1}]})
         if p.endswith("/files"): return self.out(200, {"data": S["existing"]})
         if p.endswith("/sessions"): return self.out(200, {"data": [{"upload_id": "U1", "status": 3 if S.get("completed") else 0}]})
@@ -152,6 +161,14 @@ assert eula(hidden_root, "--accept").returncode == 0
 r = cli("create", "Test map", "Map", "--summary", "A map", "--logo", str(logo), "--hidden", "--project", str(hidden_root), "--engine", str(root / "no-engine"))
 assert 'name="visible"' in S["created"], "hidden mods must send visible"
 r = cli("create", "ab", "Map", "--summary", "x", "--logo", str(logo), "--project", str(root)); assert r.returncode != 0 and "3-32" in r.stderr
+# With no logo the mod gets the modkit's default, as it does in the modkit, and never a made up one.
+S["created"] = ""
+r = cli("create", "Test map", "Map", "--summary", "A map", "--project", str(hidden_root), "--engine", str(root / "no-engine"))
+assert r.returncode != 0 and "Choose a logo" in r.stderr and not S["created"], r.stderr
+default_logo = hidden_root / "Plugins/CustomMapTools/Resources/PavlovThumbnail.jpg"
+default_logo.parent.mkdir(parents=True); default_logo.write_bytes(b"DEFAULTLOGO")
+r = cli("create", "Test map", "Map", "--summary", "A map", "--project", str(hidden_root), "--engine", str(root / "no-engine"))
+assert 'name="logo"' in S["created"] and "DEFAULTLOGO" in S["created"] and "PavlovThumbnail.jpg" in S["created"], S["created"]
 # Sharing sends what's on the list and nothing else, and only a real choice gets that far.
 import io, struct
 plugin = root / "Plugins/UGC99"
@@ -200,4 +217,28 @@ assert "points at UGC12" in r.stdout, r.stdout
 # Downloading your own shared mod would swap the real project for the shared part.
 r = cli("download", "99", *project); assert r.returncode != 0 and "replace your project" in r.stderr, r.stderr
 assert (plugin / "NOTES.md").is_file()
+
+# A source plugin says whether it's installed, and a new file on mod.io offers an update.
+source_zip = io.BytesIO()
+with zipfile.ZipFile(source_zip, "w") as z:
+    z.writestr("UGC55.uplugin", '{"FriendlyName": "[SOURCE] Trees"}'); z.writestr("Content/tree.uasset", "first")
+S.update(source_zip=source_zip.getvalue(), source_file=500)
+r = cli("browse", *project); assert r.returncode == 0 and "installed" not in r.stdout and "update" not in r.stdout, r.stdout + r.stderr
+r = cli("download", "55", *project); assert r.returncode == 0, r.stderr
+assert (root / "Plugins/UGC55/Content/tree.uasset").read_text() == "first"
+assert json.loads((root / "Saved/PavlovModStudio/sources.json").read_text()) == {"55": 500}
+r = cli("browse", *project); assert ", installed" in r.stdout, r.stdout
+S["source_file"] = 501
+r = cli("browse", *project); assert "update available" in r.stdout, r.stdout
+source_zip = io.BytesIO()
+with zipfile.ZipFile(source_zip, "w") as z:
+    z.writestr("UGC55.uplugin", '{"FriendlyName": "[SOURCE] Trees"}'); z.writestr("Content/tree.uasset", "second")
+S["source_zip"] = source_zip.getvalue()
+r = cli("download", "55", *project); assert r.returncode == 0, r.stderr
+assert (root / "Plugins/UGC55/Content/tree.uasset").read_text() == "second"
+assert (root / "Saved/Downloads/UGC55.backup/Content/tree.uasset").read_text() == "first"
+r = cli("browse", *project); assert ", installed" in r.stdout and "update" not in r.stdout, r.stdout
+# Installed asks mod.io about exactly what's in the modkit, and nothing goes out without a local plugin.
+r = cli("browse", "--installed", *project); assert r.returncode == 0, r.stderr
+assert "55" in S["browse"]["id-in"][0].split(","), S["browse"]
 print("ALL PASSED")

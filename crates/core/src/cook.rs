@@ -242,6 +242,17 @@ fn write_metadata(options: &CookOptions, stage: &Path) -> Result<()> {
 }
 
 /// Build the PC client into a folder for offline testing, without touching mod.io.
+/// The folder the modkit stages into unless told otherwise.
+pub fn default_stage_folder() -> Option<PathBuf> {
+    let folder = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        PathBuf::from(folder)
+            .join("Pavlov")
+            .join("Saved")
+            .join("Mods"),
+    )
+}
+
 pub fn stage_local(options: &CookOptions, folder: &Path) -> Result<()> {
     require_eula(&options.project)?;
     check_definition(&options.project, options.mod_id, &[Target::Windows])?;
@@ -341,6 +352,16 @@ mod tests {
         std::fs::create_dir_all(&batch).unwrap();
         std::fs::write(batch.join("RunUAT.bat"), script).unwrap();
         root
+    }
+
+    #[test]
+    fn stages_where_the_modkit_does() {
+        let folder = super::default_stage_folder().unwrap();
+        assert!(
+            folder.ends_with("Pavlov/Saved/Mods"),
+            "{}",
+            folder.display()
+        );
     }
 
     #[test]

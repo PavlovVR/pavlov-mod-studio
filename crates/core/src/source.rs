@@ -1,6 +1,8 @@
 //! Browse and download shared source plugins.
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
@@ -9,8 +11,20 @@ use zip::ZipArchive;
 
 use crate::api::{Api, GAME_ID};
 use crate::eula::require_eula;
+use crate::library::local_mods;
 use crate::say;
 use crate::share::has_choice;
+
+/// How a listed plugin compares with what's in the modkit.
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum Installed {
+    No,
+    Current,
+    Outdated,
+    /// Shared from this modkit, so a download would replace the real project.
+    Shared,
+}
 
 #[derive(Serialize)]
 pub struct SourceMod {
@@ -20,6 +34,9 @@ pub struct SourceMod {
     pub author: String,
     pub logo: Option<String>,
     pub filesize: u64,
+    pub profile_url: Option<String>,
+    pub platforms: Vec<String>,
+    pub installed: Installed,
 }
 
 #[derive(Serialize)]
@@ -28,9 +45,77 @@ pub struct SourcePage {
     pub total: u64,
 }
 
-fn to_source_mod(item: &Value) -> Option<SourceMod> {
+pub struct SourceQuery<'a> {
+    pub search: &'a str,
+    /// A mod.io value, such as `-date_live`, `-downloads_total` or `name`.
+    pub sort: &'a str,
+    pub offset: u64,
+    pub limit: u64,
+    /// Only what's in this modkit, so an update on a later page isn't missed.
+    pub installed: bool,
+}
+
+fn records_path(project: &Path) -> PathBuf {
+    project.join("Saved/PavlovModStudio/sources.json")
+}
+
+/// Which mod.io file each plugin was installed from, by mod id.
+fn load_records(project: &Path) -> BTreeMap<u64, u64> {
+    fs::read_to_string(records_path(project))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn remember_file(project: &Path, mod_id: u64, file_id: u64) -> Result<()> {
+    let mut records = load_records(project);
+    records.insert(mod_id, file_id);
+    let path = records_path(project);
+    fs::create_dir_all(path.parent().context("bad records path")?)?;
+    fs::write(path, serde_json::to_string_pretty(&records)?)?;
+    Ok(())
+}
+
+fn seconds_modified(path: &Path) -> Option<u64> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs())
+}
+
+fn installed_state(
+    project: &Path,
+    records: &BTreeMap<u64, u64>,
+    mod_id: u64,
+    file: &Value,
+) -> Installed {
+    let plugin = format!("UGC{mod_id}");
+    let descriptor = project
+        .join("Plugins")
+        .join(&plugin)
+        .join(format!("{plugin}.uplugin"));
+    if !descriptor.is_file() {
+        return Installed::No;
+    }
+    if has_choice(project, mod_id) {
+        return Installed::Shared;
+    }
+    let outdated = match (records.get(&mod_id), file["id"].as_u64()) {
+        (Some(saved), Some(live)) => *saved != live,
+        // The modkit keeps no record of what it installed, so only the dates can tell.
+        _ => seconds_modified(&descriptor)
+            .zip(file["date_added"].as_u64())
+            .is_some_and(|(plugin, live)| plugin < live),
+    };
+    if outdated {
+        Installed::Outdated
+    } else {
+        Installed::Current
+    }
+}
+
+fn to_source_mod(item: &Value, project: &Path, records: &BTreeMap<u64, u64>) -> Option<SourceMod> {
+    let id = item["id"].as_u64()?;
     Some(SourceMod {
-        id: item["id"].as_u64()?,
+        id,
         name: item["name"].as_str()?.to_string(),
         summary: item["summary"].as_str().unwrap_or_default().to_string(),
         author: item["submitted_by"]["username"]
@@ -39,24 +124,52 @@ fn to_source_mod(item: &Value) -> Option<SourceMod> {
             .to_string(),
         logo: item["logo"]["thumb_320x180"].as_str().map(str::to_string),
         filesize: item["modfile"]["filesize"].as_u64().unwrap_or(0),
+        profile_url: item["profile_url"].as_str().map(str::to_string),
+        platforms: item["platforms"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|entry| entry["platform"].as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        installed: installed_state(project, records, id, &item["modfile"]),
     })
 }
 
-/// `sort` takes mod.io values, such as `-date_live`, `-downloads_total` or `name`.
-pub fn browse(api: &Api, search: &str, sort: &str, offset: u64, limit: u64) -> Result<SourcePage> {
+pub fn browse(api: &Api, project: &Path, request: &SourceQuery) -> Result<SourcePage> {
     let path = format!("/games/{GAME_ID}/mods");
-    let pattern = format!("*{}*", search.trim());
-    let offset = offset.to_string();
-    let limit = limit.to_string();
+    let pattern = format!("*{}*", request.search.trim());
+    let offset = request.offset.to_string();
+    let limit = request.limit.to_string();
+    let ids = if request.installed {
+        let local: Vec<String> = local_mods(project)?
+            .iter()
+            .map(|m| m.id.to_string())
+            .collect();
+        if local.is_empty() {
+            return Ok(SourcePage {
+                mods: Vec::new(),
+                total: 0,
+            });
+        }
+        local.join(",")
+    } else {
+        String::new()
+    };
     let page = api.send("browse source plugins", &[], || {
         let mut query = vec![
             ("tags", "Mod"),
-            ("_sort", sort),
+            ("_sort", request.sort),
             ("_offset", offset.as_str()),
             ("_limit", limit.as_str()),
         ];
-        if !search.trim().is_empty() {
+        if !request.search.trim().is_empty() {
             query.push(("name-lk", pattern.as_str()));
+        }
+        if request.installed {
+            query.push(("id-in", ids.as_str()));
         }
         api.client()
             .get(api.url(&path))
@@ -64,12 +177,13 @@ pub fn browse(api: &Api, search: &str, sort: &str, offset: u64, limit: u64) -> R
             .query(&query)
     })?;
     let empty = Vec::new();
+    let records = load_records(project);
     Ok(SourcePage {
         mods: page["data"]
             .as_array()
             .unwrap_or(&empty)
             .iter()
-            .filter_map(to_source_mod)
+            .filter_map(|item| to_source_mod(item, project, &records))
             .collect(),
         total: page["result_total"].as_u64().unwrap_or(0),
     })
@@ -146,12 +260,19 @@ pub fn download(api: &Api, project: &Path, mod_id: u64) -> Result<()> {
     api.download(url, &zip_path)?;
     install_zip(&zip_path, project, mod_id)?;
     fs::remove_file(&zip_path).ok();
+    // Without this the plugin still works, and its dates say it's current until the next file.
+    if let Some(file_id) = details["modfile"]["id"].as_u64() {
+        if let Err(error) = remember_file(project, mod_id, file_id) {
+            say!("could not record the installed version: {error:#}");
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
 
@@ -170,6 +291,102 @@ mod tests {
             zip.write_all(text.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    fn with_plugin(name: &str, id: u64) -> PathBuf {
+        let dir = project(name);
+        let plugin = dir.join(format!("Plugins/UGC{id}"));
+        fs::create_dir_all(&plugin).unwrap();
+        fs::write(plugin.join(format!("UGC{id}.uplugin")), "{}").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_missing_plugin_is_not_installed() {
+        let dir = project("missing");
+        let file = json!({ "id": 5, "date_added": 1 });
+        let state = installed_state(&dir, &BTreeMap::new(), 7, &file);
+        assert_eq!(state, Installed::No);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_saved_file_decides_whether_an_update_exists() {
+        let dir = with_plugin("recorded", 7);
+        remember_file(&dir, 7, 5).unwrap();
+        let records = load_records(&dir);
+        let same = json!({ "id": 5, "date_added": u64::MAX });
+        let newer = json!({ "id": 6, "date_added": 1 });
+        assert_eq!(
+            installed_state(&dir, &records, 7, &same),
+            Installed::Current
+        );
+        assert_eq!(
+            installed_state(&dir, &records, 7, &newer),
+            Installed::Outdated
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn without_a_record_the_dates_decide() {
+        let dir = with_plugin("unrecorded", 7);
+        let records = BTreeMap::new();
+        let older = json!({ "id": 5, "date_added": 1 });
+        let newer = json!({ "id": 5, "date_added": u64::MAX });
+        assert_eq!(
+            installed_state(&dir, &records, 7, &older),
+            Installed::Current
+        );
+        assert_eq!(
+            installed_state(&dir, &records, 7, &newer),
+            Installed::Outdated
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_shared_plugin_never_offers_an_update() {
+        let dir = with_plugin("shared", 7);
+        fs::create_dir_all(dir.join("Saved/PavlovModStudio")).unwrap();
+        fs::write(
+            dir.join("Saved/PavlovModStudio/UGC7.share.json"),
+            r#"{"files":["Content/a.uasset"]}"#,
+        )
+        .unwrap();
+        let file = json!({ "id": 5, "date_added": u64::MAX });
+        let state = installed_state(&dir, &BTreeMap::new(), 7, &file);
+        assert_eq!(state, Installed::Shared);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_damaged_record_counts_as_no_record() {
+        let dir = project("damaged");
+        fs::create_dir_all(dir.join("Saved/PavlovModStudio")).unwrap();
+        fs::write(records_path(&dir), "not json").unwrap();
+        assert!(load_records(&dir).is_empty());
+        remember_file(&dir, 7, 5).unwrap();
+        assert_eq!(load_records(&dir).get(&7), Some(&5));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn reads_what_the_list_shows() {
+        let dir = project("listing");
+        let item = json!({
+            "id": 7, "name": "Trees", "profile_url": "https://mod.io/g/pavlov/m/trees",
+            "platforms": [{ "platform": "source" }, { "platform": "windows" }],
+            "modfile": { "id": 5, "filesize": 10 },
+        });
+        let parsed = to_source_mod(&item, &dir, &BTreeMap::new()).unwrap();
+        assert_eq!(
+            parsed.profile_url.as_deref(),
+            Some("https://mod.io/g/pavlov/m/trees")
+        );
+        assert_eq!(parsed.platforms, ["source", "windows"]);
+        assert_eq!(parsed.installed, Installed::No);
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

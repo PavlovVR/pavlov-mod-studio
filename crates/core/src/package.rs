@@ -15,20 +15,15 @@ use crate::progress::check_cancel;
 use crate::targets::Cook;
 
 /// Same layout as the modkit's zip: metadata.json and the pak at the root.
-pub fn build_zip(cook: &Cook, out: &Path, compress: bool) -> Result<()> {
+pub fn build_zip(cook: &Cook, out: &Path) -> Result<()> {
     let newest = fs::metadata(&cook.pak)?
         .modified()?
         .max(fs::metadata(&cook.metadata)?.modified()?);
     if out.is_file() && fs::metadata(out)?.modified()? >= newest {
         return Ok(());
     }
-    let method = if compress {
-        CompressionMethod::Deflated
-    } else {
-        CompressionMethod::Stored
-    };
     let options = SimpleFileOptions::default()
-        .compression_method(method)
+        .compression_method(CompressionMethod::Deflated)
         .large_file(true);
     let tmp = out.with_extension("tmp");
     let file = File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;

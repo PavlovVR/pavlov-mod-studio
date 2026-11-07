@@ -35,7 +35,7 @@ Open **Settings** at the bottom left.
 |---|---|
 | **Modkit folder** | The folder containing `Pavlov.uproject` |
 | **Unreal Engine folder** | Already filled in for a normal install of Unreal Engine 5.1. If yours is elsewhere, select **Browse** and choose its `Engine` folder |
-| **Staging folder** | Where local test builds go. You only need this for [local testing](#test-a-build-locally) |
+| **Staging folder** | Where [local test builds](#test-a-build-locally) go. It starts on the same folder as the modkit, so most people never change it |
 
 Select **Save settings** when you're done. The app then shows Pavlov's EULA from your modkit, and you have to accept it before you can do anything else. It asks again if the EULA changes.
 
@@ -87,7 +87,6 @@ Each choice is a client and its server.
 | **Change note** | Shown with the file on mod.io |
 | **Keep hidden after upload** | Uploads without going live. Make the files live later from the Files tab |
 | **Go live on all platforms together** | Waits until every build has uploaded, instead of each going live as it finishes |
-| **Skip compression** | Packages faster, but the upload is larger |
 | **Share source with other modders** | Mods only. Also shares what's ticked in the [Source tab](#source-plugins) |
 | **Show verbose log** | Opens the log with all of Unreal's output |
 
@@ -187,15 +186,17 @@ Mods you can manage that aren't in your modkit are listed under **Not in this mo
 
 ## Create a new mod
 
-Select **+** at the top of the mod list, then fill in the name, summary, type and logo. The app creates the mod on mod.io and sets up its plugin and definition in your modkit.
+Select **+** at the top of the mod list, then fill in the name, summary and type. The logo is optional, and without one the mod gets Pavlov's default, the same as in the modkit. The app creates the mod on mod.io and sets up its plugin and definition in your modkit.
 
 Pick the type carefully. It's built into the mod's files, so you can't change it later.
 
-Unreal only loads new plugins when it starts, so if it's open the app offers to restart it. Unreal asks about unsaved work first. The app also turns on **Show Plugin Content**, so your new mod shows up in the Content Browser.
+If Unreal is open, your new mod appears in it straight away, and the Content Browser goes to it. If Unreal can't load it while running, the app offers a restart instead, and Unreal asks about unsaved work first. The app also turns on **Show Plugin Content**, so your new mod shows up in the Content Browser.
 
 ## Source plugins
 
 **Browse source plugins** at the bottom left lists content other modders have shared to build into your mods. **Download** puts a plugin in your modkit.
+
+Each plugin says which platforms it's built for, because some are only for PC or only for Quest, and whether it's installed. **Update** appears when mod.io has a newer version, and it replaces your copy, including any changes you made. Your old copy moves to `Saved/Downloads` until the next download. **Installed** lists only what's in your modkit, so an update is easy to find. Your own mods say so, and are never offered as an update.
 
 ### Sharing your own
 

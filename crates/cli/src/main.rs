@@ -7,10 +7,10 @@ use pavlov_mod_core::assets::{
     analyze_assets, asset_report, check_selection, load_selection, save_selection,
 };
 use pavlov_mod_core::community;
-use pavlov_mod_core::cook::{cook, stage_local, CookOptions};
+use pavlov_mod_core::cook::{cook, default_stage_folder, stage_local, CookOptions};
 use pavlov_mod_core::create::{create_mod, setup_plugin, ModKind, NewMod, Workspace};
 use pavlov_mod_core::definition::write_version;
-use pavlov_mod_core::editor::{editor_state, restart_editor};
+use pavlov_mod_core::editor::{editor_state, load_into_editor, restart_editor};
 use pavlov_mod_core::eula::{accept_eula, read_eula};
 use pavlov_mod_core::library::{check_token, load_library, mod_status, AccessMemory};
 use pavlov_mod_core::manage::{self, all_files, edit_details, make_live, set_logo, ModEdit};
@@ -18,7 +18,7 @@ use pavlov_mod_core::package::analyze_pak;
 use pavlov_mod_core::pipeline::{self, Release};
 use pavlov_mod_core::progress::set_verbose;
 use pavlov_mod_core::share::{check_share, save_share, share_report, share_zip};
-use pavlov_mod_core::source::{browse, download};
+use pavlov_mod_core::source::{browse, download, Installed, SourceQuery};
 use pavlov_mod_core::targets::{group, Target};
 use pavlov_mod_core::upload::{prepare, publish, share_now, Options, PART_SIZE};
 
@@ -112,7 +112,9 @@ enum Command {
     CheckToken,
     /// Show whether Unreal is open and has unsaved work.
     EditorStatus(EditorArgs),
-    /// Restart Unreal, which is how it loads a new mod. It asks about unsaved work first.
+    /// Load a new mod into an open Unreal, so it appears without a restart.
+    LoadInEditor(LoadInEditorArgs),
+    /// Restart Unreal. It asks about unsaved work first.
     RestartEditor(EditorArgs),
     /// Cook a mod with the same commands as the modkit.
     Cook(CookArgs),
@@ -129,9 +131,6 @@ struct PublishArgs {
     /// Upload without making the files live
     #[arg(long)]
     inactive: bool,
-    /// Store paks uncompressed in the zip
-    #[arg(long)]
-    no_compress: bool,
     /// Make all platforms live together at the end
     #[arg(long)]
     together: bool,
@@ -140,6 +139,13 @@ struct PublishArgs {
     share_source: bool,
     #[arg(long, default_value = API_BASE, hide = true)]
     api_base: String,
+}
+
+#[derive(clap::Args)]
+struct LoadInEditorArgs {
+    mod_id: u64,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -367,6 +373,11 @@ struct BrowseArgs {
     search: String,
     #[arg(long, default_value = "-date_live")]
     sort: String,
+    /// Only plugins in this modkit
+    #[arg(long)]
+    installed: bool,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -379,8 +390,8 @@ struct DownloadArgs {
 #[derive(clap::Args)]
 struct StageArgs {
     mod_id: u64,
-    /// Folder to build into
-    folder: PathBuf,
+    /// Folder to build into. Leave it out to use the modkit's default
+    folder: Option<PathBuf>,
     #[arg(long, default_value = ".")]
     project: PathBuf,
     #[arg(long, default_value = DEFAULT_ENGINE)]
@@ -402,9 +413,9 @@ struct CreateArgs {
     kind: String,
     #[arg(long)]
     summary: String,
-    /// PNG or JPG logo
+    /// PNG or JPG logo. Leave it out to use the modkit's default
     #[arg(long)]
-    logo: PathBuf,
+    logo: Option<PathBuf>,
     /// Create the listing hidden, so only your team can see it
     #[arg(long)]
     hidden: bool,
@@ -475,9 +486,6 @@ struct UploadArgs {
     /// Upload without making the files live
     #[arg(long)]
     inactive: bool,
-    /// Store paks uncompressed in the zip
-    #[arg(long)]
-    no_compress: bool,
     /// Skip builds already on mod.io at this version
     #[arg(long)]
     skip_existing: bool,
@@ -505,7 +513,6 @@ fn upload(args: UploadArgs) -> Result<()> {
         version: args.version,
         changelog: args.changelog,
         inactive: args.inactive,
-        compress: !args.no_compress,
         skip_existing: args.skip_existing,
         together: false,
         part_size: args.part_size,
@@ -549,7 +556,6 @@ fn run_publish(args: PublishArgs) -> Result<()> {
         cook,
         changelog: args.changelog,
         inactive: args.inactive,
-        compress: !args.no_compress,
         together: args.together,
         share_source: args.share_source,
     };
@@ -663,6 +669,15 @@ fn main() -> Result<()> {
                     asset.status,
                     if left_out { "  left out" } else { "" }
                 );
+            }
+            Ok(())
+        }
+        Command::LoadInEditor(args) => {
+            let plugin = format!("UGC{}", args.mod_id);
+            if load_into_editor(&args.project, &plugin)? {
+                println!("{plugin} is in Unreal now.");
+            } else {
+                println!("Unreal is closed or already has {plugin}. Restart it to see the latest.");
             }
             Ok(())
         }
@@ -907,11 +922,24 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Browse(args) => {
-            let page = browse(&token_api()?, &args.search, &args.sort, 0, 24)?;
+            let query = SourceQuery {
+                search: &args.search,
+                sort: &args.sort,
+                offset: 0,
+                limit: 24,
+                installed: args.installed,
+            };
+            let page = browse(&token_api()?, &args.project, &query)?;
             println!("{} source plugins", page.total);
             for item in page.mods {
+                let status = match item.installed {
+                    Installed::No => "",
+                    Installed::Current => ", installed",
+                    Installed::Outdated => ", update available",
+                    Installed::Shared => ", shared from here",
+                };
                 println!(
-                    "{}  {}  by {}, {} bytes",
+                    "{}  {}  by {}, {} bytes{status}",
                     item.id, item.name, item.author, item.filesize
                 );
             }
@@ -924,7 +952,10 @@ fn main() -> Result<()> {
                 engine: args.engine,
                 mod_id: args.mod_id,
             },
-            &args.folder,
+            &args
+                .folder
+                .or_else(default_stage_folder)
+                .context("choose a folder to build into")?,
         ),
         Command::Analyze(args) => {
             let report = analyze_pak(&args.engine, &args.pak)?;

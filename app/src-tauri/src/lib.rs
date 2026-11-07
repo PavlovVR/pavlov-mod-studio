@@ -7,9 +7,11 @@ use pavlov_mod_core::assets::{
     MissingReference, Selection,
 };
 use pavlov_mod_core::community::{self, CommentPage, ModEvent, TeamMember};
-use pavlov_mod_core::cook::{stage_local, CookOptions};
+use pavlov_mod_core::cook::{default_stage_folder, stage_local, CookOptions};
 use pavlov_mod_core::create::{create_mod, setup_plugin, ModKind, NewMod, Workspace};
-use pavlov_mod_core::editor::{editor_state, restart_editor, save_work, EditorState};
+use pavlov_mod_core::editor::{
+    editor_state, load_into_editor, restart_editor, save_work, EditorState,
+};
 use pavlov_mod_core::eula::{accept_eula as accept_licence, read_eula as read_licence, Eula};
 use pavlov_mod_core::library::{
     check_folders as read_folders, check_token, load_library, local_mods, read_mod, AccessMemory,
@@ -26,7 +28,7 @@ use pavlov_mod_core::progress::{clear_cancel, emit, request_cancel, set_sink, Ev
 use pavlov_mod_core::share::{
     check_share, save_share, share_report, share_zip, ShareCheck, ShareReport, ShareZip,
 };
-use pavlov_mod_core::source::{browse, download, SourcePage};
+use pavlov_mod_core::source::{browse, download, SourcePage, SourceQuery};
 use pavlov_mod_core::targets::{find_cook, group, Target};
 use pavlov_mod_core::upload::share_now;
 use serde::{Deserialize, Serialize};
@@ -195,10 +197,16 @@ fn unprotect(_: &[u8]) -> Result<Vec<u8>, String> {
 #[tauri::command]
 fn load_settings(app: AppHandle) -> Result<Settings, String> {
     let path = settings_path(&app)?;
-    Ok(fs::read_to_string(path)
+    let mut settings: Settings = fs::read_to_string(path)
         .ok()
         .and_then(|saved| serde_json::from_str(&saved).ok())
-        .unwrap_or_default())
+        .unwrap_or_default();
+    if settings.stage.is_empty() {
+        if let Some(folder) = default_stage_folder() {
+            settings.stage = folder.to_string_lossy().into_owned();
+        }
+    }
+    Ok(settings)
 }
 
 #[tauri::command]
@@ -318,7 +326,7 @@ async fn create_new_mod(app: AppHandle, request: CreateRequest) -> Result<u64, S
             name: request.name,
             summary: request.summary,
             kind: ModKind::parse(&request.kind).map_err(text)?,
-            logo: PathBuf::from(request.logo),
+            logo: (!request.logo.is_empty()).then(|| PathBuf::from(request.logo)),
             hidden: false,
         };
         let workspace = Workspace {
@@ -351,8 +359,20 @@ async fn browse_source(
     search: String,
     sort: String,
     offset: u64,
+    installed: bool,
 ) -> Result<SourcePage, String> {
-    quick(app, move |api| browse(api, &search, &sort, offset, 24)).await
+    let project = PathBuf::from(load_settings(app.clone())?.project);
+    quick(app, move |api| {
+        let query = SourceQuery {
+            search: &search,
+            sort: &sort,
+            offset,
+            limit: 24,
+            installed,
+        };
+        browse(api, &project, &query)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -603,6 +623,14 @@ async fn save_unreal_work(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn load_into_unreal(app: AppHandle, mod_id: u64) -> Result<bool, String> {
+    local(app, move |s| {
+        load_into_editor(&PathBuf::from(s.project), &format!("UGC{mod_id}"))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn restart_unreal(app: AppHandle) -> Result<bool, String> {
     local(app, move |s| {
         restart_editor(&PathBuf::from(s.project), &PathBuf::from(s.engine))
@@ -703,19 +731,13 @@ async fn built_assets(app: AppHandle, mod_id: u64, target: String) -> Result<Vec
 }
 
 #[tauri::command]
-fn pending_release(
-    app: AppHandle,
-    mod_id: u64,
-    group_name: String,
-    compress: bool,
-) -> Result<Option<i64>, String> {
+fn pending_release(app: AppHandle, mod_id: u64, group_name: String) -> Result<Option<i64>, String> {
     let settings = load_settings(app)?;
     let targets = group(&group_name).map_err(text)?;
     Ok(pending_version(
         &PathBuf::from(settings.project),
         mod_id,
         targets,
-        compress,
     ))
 }
 
@@ -764,7 +786,6 @@ struct PublishRequest {
     group: String,
     changelog: String,
     inactive: bool,
-    compress: bool,
     together: bool,
     share_source: bool,
 }
@@ -789,7 +810,6 @@ fn start_publish(app: AppHandle, request: PublishRequest) -> Result<(), String> 
             },
             changelog: request.changelog,
             inactive: request.inactive,
-            compress: request.compress,
             together: request.together,
             share_source: request.share_source,
         };
@@ -892,6 +912,7 @@ pub fn run() {
             mod_events,
             editor_status,
             save_unreal_work,
+            load_into_unreal,
             restart_unreal,
             mod_assets,
             find_used_assets,

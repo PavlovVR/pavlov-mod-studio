@@ -28,6 +28,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const DIALOG_TIMEOUT: Duration = Duration::from_secs(600);
 const QUIT_TIMEOUT: Duration = Duration::from_secs(90);
 const CANCELLED: &str = "PMS_CANCELLED";
+const LOAD_PLUGIN: &str = include_str!("scripts/load_plugin.py");
 
 /// What the app needs to know before a build.
 #[derive(Debug, Default, Serialize)]
@@ -221,6 +222,37 @@ impl Editor {
     }
 }
 
+/// A descriptor marked so `FPluginUtils::LoadPlugin` will mount it. Unreal only reads this as it
+/// loads, so the original goes straight back and the next launch sees an ordinary plugin.
+fn marked_for_loading(original: &[u8]) -> Result<Vec<u8>> {
+    let text = String::from_utf8_lossy(original);
+    let mut plugin: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .context("this plugin's .uplugin isn't valid")?;
+    plugin["ExplicitlyLoaded"] = Value::from(true);
+    Ok(serde_json::to_vec_pretty(&plugin)?)
+}
+
+/// Load a plugin into an open editor, so it appears without a restart. Returns false if there's
+/// no editor to load it into, or the editor already had a plugin by this name, which only a
+/// restart can replace.
+pub fn load_into_editor(project: &Path, plugin: &str) -> Result<bool> {
+    let Some(mut editor) = connect(project)? else {
+        return Ok(false);
+    };
+    let descriptor = project
+        .join("Plugins")
+        .join(plugin)
+        .join(format!("{plugin}.uplugin"));
+    let original = fs::read(&descriptor).context("cannot find this plugin's .uplugin")?;
+    fs::write(&descriptor, marked_for_loading(&original)?)?;
+    let path = serde_json::to_string(&descriptor.to_string_lossy().replace('\\', "/"))?;
+    let code = format!("DESCRIPTOR = {path}\n{LOAD_PLUGIN}");
+    let result = editor.run(&code, true, COMMAND_TIMEOUT);
+    // Whatever happened, including the editor crashing, the plugin stays an ordinary one.
+    fs::write(&descriptor, original)?;
+    Ok(result?.last().is_some_and(|line| line == "loaded"))
+}
+
 /// Never fails: not being able to reach the editor just means there's nothing to report.
 pub fn editor_state(project: &Path) -> EditorState {
     let open = is_running(EDITOR);
@@ -341,7 +373,22 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::{matching_node, message, same_project, with_plugin_content};
+    use super::{marked_for_loading, matching_node, message, same_project, with_plugin_content};
+
+    #[test]
+    fn marking_a_plugin_keeps_everything_else() {
+        let original = "\u{feff}{\"FriendlyName\": \"UGC7\", \"CanContainContent\": true}";
+        let marked = marked_for_loading(original.as_bytes()).unwrap();
+        let plugin: Value = serde_json::from_slice(&marked).unwrap();
+        assert_eq!(plugin["ExplicitlyLoaded"], true);
+        assert_eq!(plugin["FriendlyName"], "UGC7");
+        assert_eq!(plugin["CanContainContent"], true);
+    }
+
+    #[test]
+    fn a_broken_descriptor_is_refused_before_anything_is_written() {
+        assert!(marked_for_loading(b"not json").is_err());
+    }
 
     #[test]
     fn messages_match_unreals_protocol() {

@@ -31,7 +31,6 @@ pub struct Options {
     pub version: Option<String>,
     pub changelog: String,
     pub inactive: bool,
-    pub compress: bool,
     pub skip_existing: bool,
     /// Upload everything hidden, then make all platforms live at the end.
     pub together: bool,
@@ -102,14 +101,13 @@ pub fn prepare(options: &Options, targets: &[Target]) -> Result<Vec<(Target, Pat
         if !options.skip_audit {
             audit_pak(&options.engine, &cook.pak, &rules.allowed)?;
         }
-        let kind = if options.compress { "upload" } else { "stored" };
         let parent = cook
             .pak
             .parent()
             .and_then(Path::parent)
             .context("bad cook path")?;
-        let zip = parent.join(format!("{}.{kind}.zip", target.name()));
-        build_zip(&cook, &zip, options.compress)?;
+        let zip = parent.join(format!("{}.upload.zip", target.name()));
+        build_zip(&cook, &zip)?;
         let size = fs::metadata(&zip)?.len();
         crate::say!(
             "[{}] {size} bytes, {} parts, platform '{}'",
@@ -251,7 +249,6 @@ pub fn share_now(api: &Api, project: &Path, mod_id: u64, changelog: String) -> R
         version: None,
         changelog,
         inactive: false,
-        compress: true,
         skip_existing: false,
         together: false,
         part_size: PART_SIZE,

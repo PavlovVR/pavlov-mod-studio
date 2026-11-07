@@ -125,6 +125,7 @@ Also in the app:
 
 - **Media, comments and team.** Manage screenshots and videos, reply to and moderate comments, and see who's on the team.
 - **New mods.** Create a mod on mod.io and set up its plugin and definition in one step.
+- **Source plugins.** Browse what other modders share, see what's installed and update it.
 - **Source sharing.** Choose exactly which files other modders get, down to a single struct or interface. Nothing leaves your PC unless you tick it, and the app warns if those files need something you left out. Browse and download what others share too.
 - **Local testing.** Stage a build to a folder without touching mod.io.
 - **Keeps out of your way.** Unreal can stay open or closed while you publish, and the app follows your Windows light or dark setting.

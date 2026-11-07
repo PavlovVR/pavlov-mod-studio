@@ -15,6 +15,9 @@ use crate::say;
 const ENGINE_VERSION: &str = "5.1.1";
 const TEMPLATE_ICON: &str =
     "Plugins/Editor/PluginBrowser/Templates/ContentOnly/Resources/Icon128.png";
+/// What the modkit uses when no logo is chosen. mod.io requires a logo, and this
+/// reads the modder's own copy, so this project doesn't redistribute it.
+const DEFAULT_LOGO: &str = "Plugins/CustomMapTools/Resources/PavlovThumbnail.jpg";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModKind {
@@ -54,7 +57,8 @@ pub struct NewMod {
     pub name: String,
     pub summary: String,
     pub kind: ModKind,
-    pub logo: PathBuf,
+    /// Leave empty to use the modkit's default logo.
+    pub logo: Option<PathBuf>,
     /// Create the listing hidden, so only the team can see it.
     pub hidden: bool,
 }
@@ -72,16 +76,32 @@ fn validate(new: &NewMod) -> Result<()> {
     if new.summary.trim().is_empty() {
         bail!("Add a summary so people know what the mod is");
     }
-    let extension = new
-        .logo
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !matches!(extension.as_str(), "png" | "jpg" | "jpeg") {
-        bail!("The logo must be a PNG or JPG image");
+    if let Some(logo) = &new.logo {
+        let extension = logo
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "png" | "jpg" | "jpeg") {
+            bail!("The logo must be a PNG or JPG image");
+        }
     }
     Ok(())
+}
+
+/// The chosen logo, or the modkit's default when there isn't one.
+fn logo_file(project: &Path, new: &NewMod) -> Result<PathBuf> {
+    if let Some(logo) = &new.logo {
+        return Ok(logo.clone());
+    }
+    let default = project.join(DEFAULT_LOGO);
+    if !default.is_file() {
+        bail!(
+            "Choose a logo, because the modkit's default is missing from {}",
+            default.display()
+        );
+    }
+    Ok(default)
 }
 
 fn mod_blob(kind: ModKind) -> String {
@@ -94,11 +114,11 @@ fn mod_blob(kind: ModKind) -> String {
 }
 
 /// Create the mod on mod.io and return its id.
-pub fn create_on_modio(api: &Api, new: &NewMod) -> Result<u64> {
+pub fn create_on_modio(api: &Api, project: &Path, new: &NewMod) -> Result<u64> {
     validate(new)?;
-    let logo = fs::read(&new.logo).with_context(|| format!("reading {}", new.logo.display()))?;
-    let file_name = new
-        .logo
+    let path = logo_file(project, new)?;
+    let logo = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("logo.png")
@@ -185,7 +205,7 @@ pub fn setup_plugin(workspace: &Workspace, mod_id: u64, kind: ModKind) -> Result
 /// names the id so setup can be retried without creating a duplicate mod.
 pub fn create_mod(api: &Api, workspace: &Workspace, new: &NewMod) -> Result<u64> {
     require_eula(&workspace.project)?;
-    let mod_id = create_on_modio(api, new)?;
+    let mod_id = create_on_modio(api, &workspace.project, new)?;
     say!("created mod {mod_id} on mod.io");
     setup_plugin(workspace, mod_id, new.kind).with_context(|| {
         format!("mod {mod_id} exists on mod.io, but local setup failed; retry setup for this id")
@@ -202,7 +222,7 @@ mod tests {
             name: name.to_string(),
             summary: summary.to_string(),
             kind: ModKind::Map,
-            logo: PathBuf::from(logo),
+            logo: (!logo.is_empty()).then(|| PathBuf::from(logo)),
             hidden: false,
         }
     }
@@ -215,6 +235,22 @@ mod tests {
         assert!(validate(&new_mod(&"x".repeat(33), "A map", "logo.png")).is_err());
         assert!(validate(&new_mod("Dust", "  ", "logo.png")).is_err());
         assert!(validate(&new_mod("Dust", "A map", "logo.gif")).is_err());
+        assert!(validate(&new_mod("Dust", "A map", "")).is_ok());
+    }
+
+    #[test]
+    fn no_logo_uses_the_modkit_default() {
+        let dir = std::env::temp_dir().join(format!("pms-logo-{}", std::process::id()));
+        fs::remove_dir_all(&dir).ok();
+        let chosen = new_mod("Dust", "A map", "mine.png");
+        assert_eq!(logo_file(&dir, &chosen).unwrap(), PathBuf::from("mine.png"));
+        let plain = new_mod("Dust", "A map", "");
+        let missing = logo_file(&dir, &plain).unwrap_err().to_string();
+        assert!(missing.contains("Choose a logo"), "{missing}");
+        fs::create_dir_all(dir.join("Plugins/CustomMapTools/Resources")).unwrap();
+        fs::write(dir.join(DEFAULT_LOGO), "jpg").unwrap();
+        assert_eq!(logo_file(&dir, &plain).unwrap(), dir.join(DEFAULT_LOGO));
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

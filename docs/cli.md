@@ -38,7 +38,6 @@ pavlov-mod-studio publish <mod id> <group> --project <modkit folder> --changelog
 | `--changelog <text>` | The note shown with the file |
 | `--inactive` | Uploads without making the files live |
 | `--together` | Makes all platforms live together at the end |
-| `--no-compress` | Stores paks uncompressed in the zip |
 | `--share-source` | Also shares what's on this mod's share list. Stops before cooking if the list is empty |
 
 If an upload stops, running the same command again resumes that release. It skips finished builds and sends only the missing chunks.
@@ -51,8 +50,8 @@ If an upload stops, running the same command again resumes that release. It skip
 |---|---|
 | `publish <mod> <group>` | Everything the modkit's Upload button does, from version bump to upload |
 | `cook <mod> <group>` | Cooks with the same commands as the modkit |
-| `upload <mod> <group>` | Uploads builds already cooked. Takes `--version`, `--changelog`, `--inactive`, `--no-compress`, `--skip-existing` and `--dry-run` |
-| `stage <mod> <folder>` | Builds the PC client into a folder for offline testing |
+| `upload <mod> <group>` | Uploads builds already cooked. Takes `--version`, `--changelog`, `--inactive`, `--skip-existing` and `--dry-run` |
+| `stage <mod> [folder]` | Builds the PC client into a folder for offline testing, by default the same one as the modkit |
 | `analyze <pak>` | Shows what takes up the space in a pak |
 | `set-version <mod> <version>` | Sets the version in a mod's definition, then confirms it from a fresh session |
 
@@ -69,7 +68,7 @@ If an upload stops, running the same command again resumes that release. It skip
 
 | Command | What it does |
 |---|---|
-| `create <name> <kind> --summary <text> --logo <file>` | Creates a mod on mod.io and sets it up locally. `<kind>` is `Map`, `Mod` or `GameMode`. Add `--hidden` to keep the listing hidden |
+| `create <name> <kind> --summary <text>` | Creates a mod on mod.io and sets it up locally. `<kind>` is `Map`, `Mod` or `GameMode`. Add `--logo <file>` to choose a logo, or leave it out for the modkit's default, and `--hidden` to keep the listing hidden |
 | `setup-plugin <mod> <kind>` | Creates the local plugin and definition for a mod that's already on mod.io |
 
 ### Files and page
@@ -108,8 +107,8 @@ If an upload stops, running the same command again resumes that release. It skip
 
 | Command | What it does |
 |---|---|
-| `browse [search]` | Browses source plugins. Add `--sort` to change the order |
-| `download <mod>` | Downloads a source plugin into the modkit |
+| `browse [search]` | Browses source plugins and says which are installed or have an update. Add `--sort` to change the order, or `--installed` to list only what's in your modkit |
+| `download <mod>` | Downloads a source plugin into the modkit, or updates one you already have |
 | `share <mod> [paths]` | Adds files to the share list, or shows it. Paths are inside the plugin folder, such as `Content/Api/BP_Api.uasset`. Takes `--remove` and `--clear` |
 | `share <mod> [paths] --check` | Shows what these files, or the list, need that isn't shared. Changes nothing |
 | `share <mod> --export <file>` | Saves exactly what would be shared as a zip |
@@ -122,6 +121,7 @@ If an upload stops, running the same command again resumes that release. It skip
 | `eula` | Shows Pavlov's EULA from the modkit. Add `--accept` to accept it. Commands that use the modkit stop until you do |
 | `check-token` | Checks that mod.io accepts the token in `MODIO_TOKEN` |
 | `editor-status` | Shows whether Unreal is open and has unsaved work |
-| `restart-editor` | Restarts Unreal, which is how it loads a new mod. It asks about unsaved work first |
+| `load-in-editor <mod>` | Loads a new mod into an open Unreal, so it appears without a restart |
+| `restart-editor` | Restarts Unreal. It asks about unsaved work first |
 
 Run `pavlov-mod-studio <command> --help` for every option.

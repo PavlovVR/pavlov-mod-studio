@@ -37,7 +37,10 @@ type FilePage = { files: ModFile[]; total: number; next: number | null };
 type CommentPage = { comments: Comment[]; total: number; next: number | null };
 type FolderCheck = { engine: string; problems: string[] };
 type Usage = { requests: number; writes: number; request_limit: number; write_limit: number; wait_seconds: number };
-type SourceMod = { id: number; name: string; summary: string; author: string; logo: string | null; filesize: number };
+type SourceMod = {
+  id: number; name: string; summary: string; author: string; logo: string | null; filesize: number;
+  profile_url: string | null; platforms: string[]; installed: "no" | "current" | "outdated" | "shared";
+};
 type Tab = "overview" | "publish" | "cook" | "source" | "files" | "page" | "media" | "comments" | "team" | "advanced" | "size";
 type AssetStatus = "required" | "used" | "in_string" | "other_mods" | "unused" | "unknown";
 type ShareStatus = "needed" | "changed" | "added";
@@ -142,6 +145,7 @@ const PLATFORMS: Record<string, { name: string; icon: keyof typeof ICONS; role: 
   source: { name: "Source", icon: "code", role: "Source plugin" },
 };
 const LIVE_PLATFORMS = ["windows", "linux", "oculus", "mac"];
+const SOURCE_STATUS: Record<string, string> = { current: "Installed", outdated: "Update available", yours: "Your mod" };
 const STAGES = [
   { id: "check", label: "Check" },
   { id: "version", label: "Version" },
@@ -376,7 +380,7 @@ const state = {
   linkDraft: "",
   dependencyDraft: "",
   metadataDraft: { key: "", value: "" },
-  source: { search: "", sort: "-date_live", offset: 0, total: 0, mods: [] as SourceMod[], busy: false, downloading: 0, note: null as Note | null },
+  source: { search: "", sort: "-date_live", offset: 0, total: 0, mods: [] as SourceMod[], installed: false, busy: false, downloading: 0, note: null as Note | null },
   together: false,
   pending: null as number | null,
   shareSource: false,
@@ -387,7 +391,6 @@ const state = {
   group: "both" as Group,
   changelog: "",
   inactive: false,
-  compress: true,
   run: null as Run | null,
   verbose: readVerbose(),
 };
@@ -1114,9 +1117,33 @@ function sizeHtml(entry: Entry): string {
 
 /* Source plugins */
 
+/** What a listed plugin means here. A modder's own mod is their project, so it's never replaced. */
+function sourceState(m: SourceMod): SourceMod["installed"] | "yours" {
+  if (m.installed === "shared") return "yours";
+  return m.installed !== "no" && state.access.known && state.access.owned.has(m.id) ? "yours" : m.installed;
+}
+
+/** A shared plugin can be built for only one of these, which matters before downloading it. */
+function sourcePlatformsHtml(m: SourceMod): string {
+  const tag = (name: keyof typeof ICONS, label: string) => `<span class="inline-flex items-center gap-1">${icon(name, 14)}${label}</span>`;
+  const pc = m.platforms.some((platform) => platform === "windows" || platform === "linux");
+  const quest = m.platforms.some((platform) => platform === "oculus" || platform === "mac");
+  return `${pc ? tag("monitor", "PC") : ""}${quest ? tag("headset", "Quest") : ""}`;
+}
+
+function sourceActionHtml(m: SourceMod): string {
+  const { busy, downloading } = state.source;
+  const status = sourceState(m);
+  if (status === "yours") return "";
+  const label = status === "outdated" ? "Update" : status === "current" ? "Download again" : "Download";
+  const working = status === "outdated" ? "Updating" : "Downloading";
+  const style = status === "outdated" ? "btn-primary" : "btn-secondary";
+  return `<button class="btn ${style} btn-sm min-w-0 flex-1" data-download="${m.id}" ${busy ? "disabled" : ""}>${downloading === m.id ? `<span class="spinner size-3.5"></span>${working}` : label}</button>`;
+}
+
 function sourceHtml(): string {
-  const { search, sort, mods, offset, total, busy, note } = state.source;
-  const sorts = [["-date_live", "Newest"], ["-downloads_total", "Most downloads"], ["-subscribers_total", "Most subscribers"], ["-ratings_weighted_aggregate", "Top rated"], ["name", "Name"]];
+  const { search, sort, mods, offset, total, busy, note, installed } = state.source;
+  const sorts = [["-date_live", "Newest"], ["-popular", "Trending"], ["-downloads_total", "Most downloads"], ["-subscribers_total", "Most subscribers"], ["-ratings_weighted_aggregate", "Top rated"], ["name", "Name"]];
   const card = (m: SourceMod) => `
     <li class="card flex flex-col overflow-hidden">
       ${m.logo ? `<img src="${escape(m.logo)}" alt="" class="aspect-video w-full bg-raised object-cover" />` : `<div class="aspect-video w-full bg-raised"></div>`}
@@ -1124,7 +1151,14 @@ function sourceHtml(): string {
         <strong class="truncate font-semibold" title="${escape(m.name)}">${escape(m.name)}</strong>
         <span class="mt-0.5 truncate text-xs text-ink-subtle">${escape(m.author)}, ${megabytes(m.filesize)}</span>
         <p class="mt-2 line-clamp-2 flex-1 text-[13px] text-ink-muted">${escape(m.summary)}</p>
-        <button class="btn btn-secondary btn-sm mt-3 w-full" data-download="${m.id}" ${busy ? "disabled" : ""}>${state.source.downloading === m.id ? `<span class="spinner size-3.5"></span>Downloading` : "Download"}</button>
+        <div class="mt-2 flex items-center gap-3 text-xs text-ink-muted">
+          ${sourcePlatformsHtml(m)}
+          ${SOURCE_STATUS[sourceState(m)] ? `<span class="ml-auto">${SOURCE_STATUS[sourceState(m)]}</span>` : ""}
+        </div>
+        <div class="mt-3 flex gap-2">
+          ${sourceActionHtml(m)}
+          ${m.profile_url ? `<button class="btn btn-secondary btn-sm btn-icon" data-source-page="${m.id}" aria-label="View ${escape(m.name)} on mod.io" title="View on mod.io">${icon("external")}</button>` : ""}
+        </div>
       </div>
     </li>`;
   return `
@@ -1138,10 +1172,12 @@ function sourceHtml(): string {
         <select id="source-sort" class="input w-44 shrink-0" aria-label="Sort by">
           ${sorts.map(([id, label]) => `<option value="${id}" ${sort === id ? "selected" : ""}>${label}</option>`).join("")}
         </select>
+        <button class="btn btn-secondary shrink-0 aria-pressed:border-ink aria-pressed:bg-raised" data-action="source-installed" aria-pressed="${installed}">Installed</button>
+        <button class="btn btn-secondary btn-icon shrink-0" data-action="source-refresh" aria-label="Refresh" title="Refresh" ${busy ? "disabled" : ""}>${icon("refresh")}</button>
       </div>
       ${note ? `<div class="mb-4">${noteHtml(note)}</div>` : ""}
       ${busy && !mods.length ? loadingHtml() : ""}
-      ${!busy && !mods.length && !note ? `<p class="text-ink-muted">Nothing matches that search.</p>` : ""}
+      ${!busy && !mods.length && !note ? `<p class="text-ink-muted">${installed ? "None of the plugins in your modkit are shared as source." : "Nothing matches that search."}</p>` : ""}
       <ul class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4">${mods.map(card).join("")}</ul>
       ${total ? `
         <div class="mt-5 flex items-center justify-between text-ink-muted">
@@ -2386,7 +2422,6 @@ function publishHtml(entry: Entry): string {
         <div class="space-y-3">
           ${optionHtml("inactive", "Keep hidden after upload", "Make the files live later from the Files tab.", state.inactive)}
           ${optionHtml("together", "Go live on all platforms together", "Waits until every build has uploaded.", state.together && !state.inactive, state.inactive)}
-          ${optionHtml("uncompressed", "Skip compression", "Packages faster, but the upload is larger.", !state.compress)}
           ${entry.kind === "Mod" ? shareOptionHtml(entry) : ""}
           ${optionHtml("verbose", "Show verbose log", "Opens the log with all output from Unreal, such as UnrealPak.", state.verbose)}
         </div>
@@ -2577,8 +2612,8 @@ function settingsHtml(): string {
 }
 
 function createReady(): boolean {
-  const { name, summary, logo } = state.draft;
-  return Boolean(name.trim().length >= 3 && summary.trim() && logo && !state.creating && state.hasToken);
+  const { name, summary } = state.draft;
+  return Boolean(name.trim().length >= 3 && summary.trim() && !state.creating && state.hasToken);
 }
 
 function createHtml(): string {
@@ -2605,7 +2640,8 @@ function createHtml(): string {
           <input id="draft-name" class="input" autocomplete="off" maxlength="32" value="${escape(name)}" /></label>
         <label class="field"><span class="label">Summary</span>
           <textarea id="draft-summary" class="input" spellcheck="true" rows="3" maxlength="250">${escape(summary)}</textarea></label>
-        ${logoField("Logo", logo, "pick-logo", "No image chosen")}
+        ${logoField("Logo, optional", logo, "pick-logo", "Pavlov's default logo")}
+        ${logo ? `<button class="btn btn-ghost btn-sm" data-action="clear-logo">Use the default logo</button>` : ""}
         <p class="hint">By creating a mod you agree to the <button class="cursor-pointer text-ink underline" data-action="terms">mod.io terms</button>.</p>
         <button class="btn btn-primary" data-action="create-mod" ${createReady() ? "" : "disabled"}>
           ${state.creating ? "Creating mod" : "Create mod"}
@@ -3099,7 +3135,7 @@ async function refreshPending(): Promise<void> {
   let pending: number | null = null;
   try {
     if (entry?.local) {
-      pending = await invoke<number | null>("pending_release", { modId: entry.id, groupName: state.group, compress: state.compress });
+      pending = await invoke<number | null>("pending_release", { modId: entry.id, groupName: state.group });
     }
   } catch {
     pending = null;
@@ -3388,7 +3424,7 @@ async function setupLocal(entry: Entry): Promise<void> {
     await invoke("retry_setup", { modId: entry.id, kind: entry.kind });
     await loadMods();
   });
-  if (done) await offerRestart(entry.name);
+  if (done) await showInUnreal(entry.id, entry.name);
 }
 
 /* Source plugins */
@@ -3403,7 +3439,7 @@ async function loadSource(): Promise<void> {
   render();
   try {
     const page = await invoke<{ mods: SourceMod[]; total: number }>("browse_source", {
-      search: source.search, sort: source.sort, offset: source.offset,
+      search: source.search, sort: source.sort, offset: source.offset, installed: source.installed,
     });
     if (ticket !== sourceTicket) return;
     source.mods = page.mods;
@@ -3420,9 +3456,12 @@ async function loadSource(): Promise<void> {
 
 async function downloadSource(id: number): Promise<void> {
   const mod = state.source.mods.find((m) => m.id === id);
+  const updating = mod?.installed === "outdated";
   const yes = await ask(
-    `This replaces the plugin UGC${id} if you already have it. The old copy moves to Saved/Downloads.`,
-    { title: `Download ${mod?.name ?? id}?`, kind: "warning" },
+    mod?.installed === "no"
+      ? `This adds the plugin UGC${id} to your modkit.`
+      : `This replaces your copy of UGC${id} with the one on mod.io, including any changes you made to it. Your copy moves to Saved/Downloads until the next download.`,
+    { title: `${updating ? "Update" : "Download"} ${mod?.name ?? id}?`, kind: mod?.installed === "no" ? "info" : "warning" },
   );
   if (!yes) return;
   state.source.busy = true;
@@ -3431,7 +3470,9 @@ async function downloadSource(id: number): Promise<void> {
   render();
   try {
     await invoke("download_source", { modId: id });
-    state.source.note = { ok: true, text: `Downloaded ${mod?.name ?? id}. Restart Unreal to see it.` };
+    const shown = await loadIntoUnreal(id);
+    state.source.note = { ok: true, text: `${updating ? "Updated" : "Downloaded"} ${mod?.name ?? id}. ${shown ? "It's in Unreal now." : "Restart Unreal to see it."}` };
+    if (mod) mod.installed = "current";
     await loadMods();
   } catch (error) {
     state.source.note = { ok: false, text: String(error) };
@@ -3496,15 +3537,28 @@ async function confirmUnrealWork(): Promise<boolean> {
   return true;
 }
 
-/** An open editor can't load a new plugin, so offer the one thing that works. */
-async function offerRestart(name: string): Promise<void> {
+/** Not being able to load it must never get in the way, because a restart always works. */
+async function loadIntoUnreal(id: number): Promise<boolean> {
+  try {
+    return await invoke<boolean>("load_into_unreal", { modId: id });
+  } catch {
+    return false;
+  }
+}
+
+/** Put a new mod in front of the modder, however Unreal is running. */
+async function showInUnreal(id: number, name: string): Promise<void> {
   const editor = await editorStatus();
   if (!editor?.open) return;
+  if (editor.connected && await loadIntoUnreal(id)) {
+    state.note = { ok: true, text: `${name} is in Unreal now.` };
+    return render();
+  }
   if (!editor.connected) {
     state.note = { ok: true, text: `Restart Unreal to see ${name}.` };
     return render();
   }
-  const yes = await ask(`Unreal only loads new mods when it starts. It will ask about any unsaved work first.`, {
+  const yes = await ask(`Unreal couldn't load it while running, so it needs a restart. It will ask about any unsaved work first.`, {
     title: `Restart Unreal to see ${name}?`, kind: "info", okLabel: "Restart Unreal", cancelLabel: "Later",
   });
   if (!yes) return;
@@ -3561,7 +3615,7 @@ async function publish(): Promise<void> {
     await invoke("start_publish", {
       request: {
         mod_id: run.modId, group: state.group, changelog: state.changelog,
-        inactive: state.inactive, compress: state.compress,
+        inactive: state.inactive,
         together: state.together, share_source: state.shareSource && selectedEntry()?.kind === "Mod" && chosenCount(run.modId) > 0,
       },
     });
@@ -3704,7 +3758,7 @@ async function createMod(): Promise<void> {
     await loadMods();
     await loadLibrary();
     selectMod(id);
-    await offerRestart(name);
+    await showInUnreal(id, name);
   } catch (error) {
     state.createError = String(error);
     const failed = /mod (\d+) exists on mod\.io/.exec(state.createError);
@@ -3765,6 +3819,11 @@ async function handleClick(event: MouseEvent): Promise<void> {
     return;
   }
   if (data.download) return void downloadSource(Number(data.download));
+  if (data.sourcePage) {
+    const url = state.source.mods.find((m) => m.id === Number(data.sourcePage))?.profile_url;
+    if (url) void openUrl(url);
+    return;
+  }
   if (data.page) {
     state.source.offset = Math.max(0, state.source.offset + Number(data.page));
     state.source.note = null;
@@ -3902,6 +3961,12 @@ async function handleClick(event: MouseEvent): Promise<void> {
       if (state.cooling.mod || waiting()) return;
       coolDown("mod");
       return void refreshMod(id);
+    case "source-refresh":
+      state.source.note = null;
+      return void loadSource();
+    case "source-installed":
+      Object.assign(state.source, { installed: !state.source.installed, offset: 0, note: null });
+      return void loadSource();
     case "source":
       state.view = "source";
       state.source.note = null;
@@ -3986,6 +4051,10 @@ async function handleClick(event: MouseEvent): Promise<void> {
     case "open-profile":
       if (entry?.info?.profile_url) void openUrl(entry.info.profile_url);
       return;
+    case "clear-logo":
+      state.draft.logo = "";
+      render();
+      break;
     case "pick-logo": {
       const file = await pickLogo();
       if (file) {
@@ -4027,7 +4096,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
         await loadMods();
         await loadLibrary();
         selectMod(failed.id);
-        return await offerRestart(modNameOf(failed.id));
+        return await showInUnreal(failed.id, modNameOf(failed.id));
       } catch (error) {
         state.createError = String(error);
         return render();
@@ -4068,10 +4137,6 @@ app.addEventListener("change", (event) => {
   if (input.id === "inactive") {
     state.inactive = input.checked;
     render();
-  }
-  if (input.id === "uncompressed") {
-    state.compress = !input.checked;
-    void refreshPending().then(render);
   }
   if (input.id === "together") state.together = input.checked;
   if (input.id === "verbose") saveVerbose(input.checked);
