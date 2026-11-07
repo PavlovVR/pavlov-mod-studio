@@ -218,6 +218,30 @@
     @apply border-ink text-ink;
   }
 
+  /* The window's own minimise, maximise and close buttons, drawn like Windows draws them. */
+  .caption {
+    @apply grid h-full w-[46px] place-items-center text-ink;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-size: 10px;
+  }
+  .caption:hover {
+    @apply bg-raised;
+  }
+  .caption:active {
+    @apply bg-line-strong;
+  }
+  .caption-close:hover {
+    background: #c42b1c;
+    color: #ffffff;
+  }
+  .caption-close:active {
+    background: rgb(196 43 28 / 0.9);
+    color: #ffffff;
+  }
+  .inactive .caption:not(:hover) {
+    @apply text-ink-subtle;
+  }
+
   .nav-row {
     @apply flex w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-ink-muted transition-colors;
   }

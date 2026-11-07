@@ -1,6 +1,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
@@ -396,16 +397,29 @@ const state = {
 };
 
 const app = document.querySelector<HTMLElement>("#app")!;
-app.className = "grid h-screen grid-cols-[248px_minmax(0,1fr)]";
+app.className = "grid h-screen grid-rows-[auto_minmax(0,1fr)] grid-cols-[248px_minmax(0,1fr)]";
 app.spellcheck = false;
+// The window has no Windows title bar, so this row is it: drag it to move the window,
+// double-click it to maximise. Only elements marked as a drag region start a drag.
 app.innerHTML = `
-  <aside id="rail" class="flex min-h-0 flex-col border-r border-line bg-panel"></aside>
+  <header id="titlebar" class="col-span-full flex h-10 select-none" data-tauri-drag-region>
+    <div id="brand" class="flex shrink-0 items-center justify-between gap-1 pr-1.5 pl-3" data-tauri-drag-region></div>
+    <div class="flex-1" data-tauri-drag-region></div>
+    <div class="flex">
+      <button class="caption" data-action="window-minimize" aria-label="Minimize" title="Minimize" tabindex="-1">&#xE921;</button>
+      <button class="caption" data-action="window-maximize" aria-label="Maximize" title="Maximize" tabindex="-1">&#xE922;</button>
+      <button class="caption caption-close" data-action="window-close" aria-label="Close" title="Close" tabindex="-1">&#xE8BB;</button>
+    </div>
+  </header>
+  <aside id="rail" class="flex min-h-0 flex-col border-r border-line bg-panel pt-1"></aside>
   <div class="flex min-h-0 min-w-0 flex-col">
     <main id="main" class="min-h-0 flex-1 overflow-y-auto"></main>
     <section id="run" class="max-h-[62vh] shrink-0 overflow-y-auto" aria-label="Current run"></section>
   </div>
   <div id="announce" class="sr-only" role="status" aria-live="polite"></div>
   <dialog id="modal" aria-labelledby="modal-title" class="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-lg border border-line bg-canvas p-0 text-ink backdrop:bg-black/50"></dialog>`;
+const titlebar = app.querySelector<HTMLElement>("#titlebar")!;
+const brand = app.querySelector<HTMLElement>("#brand")!;
 const rail = app.querySelector<HTMLElement>("#rail")!;
 const main = app.querySelector<HTMLElement>("#main")!;
 const runPanel = app.querySelector<HTMLElement>("#run")!;
@@ -596,18 +610,6 @@ function railHtml(): string {
         </div>`
       : "";
   return `
-    <div class="flex h-14 shrink-0 items-center justify-between gap-1 pr-1.5 pl-3">
-      <span class="flex min-w-0 items-center gap-2">
-        <img src="${logo}" alt="" class="size-5 shrink-0 rounded" />
-        <span class="truncate text-sm font-semibold tracking-tight">Pavlov Mod Studio</span>
-      </span>
-      <span class="flex">
-        <button class="btn btn-ghost btn-sm btn-icon" data-action="refresh-all" aria-label="Refresh all mods" title="Refresh all mods" ${state.loading || !state.hasToken || state.cooling.all || waiting() ? "disabled" : ""}>
-          ${state.loading ? `<span class="spinner"></span>` : icon("refresh")}
-        </button>
-        <button class="btn btn-ghost btn-sm btn-icon" data-action="new-mod" aria-label="New mod" title="New mod">${icon("plus")}</button>
-      </span>
-    </div>
     ${all.length > 6 ? `
       <div class="px-2 pb-1">
         <input id="mod-filter" class="input h-8" autocomplete="off" value="${escape(state.filter)}" placeholder="Filter mods" aria-label="Filter mods" />
@@ -625,6 +627,23 @@ function railHtml(): string {
       <button class="nav-row" data-action="source" ${state.view === "source" ? 'aria-current="page"' : ""}>${icon("library")}Browse source plugins</button>
       <button class="nav-row" data-action="settings" ${state.view === "settings" ? 'aria-current="page"' : ""}>${icon("settings")}Settings${state.update.status === "available" ? `<span class="badge ml-auto">Update</span>` : state.update.status === "installing" ? `<span class="badge badge-plain ml-auto">Updating</span>` : ""}</button>
     </div>`;
+}
+
+/** The left of the title bar, which sits over the sidebar and carries its buttons. */
+function brandHtml(): string {
+  const name = `
+    <span class="pointer-events-none flex min-w-0 items-center gap-2">
+      <img src="${logo}" alt="" class="size-5 shrink-0 rounded" />
+      <span class="truncate text-sm font-semibold tracking-tight">Pavlov Mod Studio</span>
+    </span>`;
+  if (eulaLocked()) return name;
+  return `${name}
+    <span class="flex">
+      <button class="btn btn-ghost btn-sm btn-icon" data-action="refresh-all" aria-label="Refresh all mods" title="Refresh all mods" ${state.loading || !state.hasToken || state.cooling.all || waiting() ? "disabled" : ""}>
+        ${state.loading ? `<span class="spinner"></span>` : icon("refresh")}
+      </button>
+      <button class="btn btn-ghost btn-sm btn-icon" data-action="new-mod" aria-label="New mod" title="New mod">${icon("plus")}</button>
+    </span>`;
 }
 
 function pageHeader(title: string, subtitle: string): string {
@@ -2755,8 +2774,22 @@ function syncMixed(): void {
 }
 
 function renderRail(): void {
-  if (eulaLocked()) rail.replaceChildren();
+  const locked = eulaLocked();
+  // Over the sidebar the title bar continues it, and with no sidebar it's plain.
+  for (const name of ["w-[248px]", "border-r", "border-line", "bg-panel"]) brand.classList.toggle(name, !locked);
+  morph(brand, brandHtml());
+  if (locked) rail.replaceChildren();
   else morph(rail, railHtml());
+}
+
+/** Shows Restore in place of Maximize while the window fills the screen, as Windows does. */
+async function syncMaximized(): Promise<void> {
+  const maximized = await getCurrentWindow().isMaximized().catch(() => false);
+  const button = titlebar.querySelector<HTMLElement>('[data-action="window-maximize"]')!;
+  const label = maximized ? "Restore" : "Maximize";
+  button.textContent = maximized ? "" : "";
+  button.title = label;
+  button.setAttribute("aria-label", label);
 }
 
 let logTimer = 0;
@@ -3799,6 +3832,9 @@ async function handleClick(event: MouseEvent): Promise<void> {
   const data = target.dataset;
   const entry = selectedEntry();
   const id = state.selectedId!;
+  if (data.action === "window-minimize") return getCurrentWindow().minimize();
+  if (data.action === "window-maximize") return getCurrentWindow().toggleMaximize();
+  if (data.action === "window-close") return getCurrentWindow().close();
   if (data.mod) return selectMod(Number(data.mod));
   if (data.tab) return selectTab(data.tab as Tab);
   if (data.report) {
@@ -4129,6 +4165,11 @@ function showFailure(error: unknown): void {
 app.addEventListener("click", (event) => {
   handleClick(event).catch(showFailure);
 });
+// Windows dims a window's buttons while another window is in front.
+window.addEventListener("blur", () => titlebar.classList.add("inactive"));
+window.addEventListener("focus", () => titlebar.classList.remove("inactive"));
+void getCurrentWindow().onResized(() => void syncMaximized()).catch(() => {});
+void syncMaximized();
 window.addEventListener("unhandledrejection", (event) => showFailure(event.reason));
 
 app.addEventListener("change", (event) => {

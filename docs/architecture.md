@@ -36,6 +36,8 @@ The look is neutral and serious and follows the Windows light or dark setting: g
 
 A run lives in the panel under the main view, which `renderRun()` updates on its own, so progress never disturbs what the user is typing.
 
+The window has no Windows title bar. `#titlebar` in `main.ts` is the title bar: its left part sits over the sidebar and carries the sidebar's buttons, and its minimise, maximise and close buttons are drawn like Windows draws them. Only elements marked `data-tauri-drag-region` move the window, so text inside one needs `pointer-events-none`. The one thing lost is the Snap Layouts menu that Windows 11 shows over its own maximise button. Win+Z still opens it.
+
 mod.io data is read once and kept. `library.rs::load_library` reads every mod in one batched request at launch, and nothing else is read until someone opens a mod. `cache` in `main.ts` keeps each mod's files, comments and so on until a Refresh or a change. Switching mods must never fetch what's already held. Requests someone is waiting on use `Api::quick`, which fails in seconds, and long jobs keep `Api::new` and its patient retries.
 
 Anything typed must live in `state`, because background results re-render the page. A Page draft that hasn't been changed must not outlive the data it was copied from, or a save could overwrite newer edits.
@@ -68,3 +70,4 @@ Most write paths (create, edit, logo, make live, share source, and everything in
 - `UnrealPak -List` gives paths relative to the pak's mount point, and a small mod with no engine files mounts deeper than the root. Always read paths through `package.rs::pak_paths`.
 - A plugin named with `[SOURCE]` in its FriendlyName is built into mods rather than excluded. That rule was inferred from matching real plugins, not found as a literal check in the modkit.
 - morphdom can move an element when a row appears above it, and moving an element resets its scroll. `renderRun()` restores the log's position for this reason.
+- The icon's source is `app/src-tauri/icons/source/app-icon.png`. The full picture is a smudge below 64 px, so the small sizes use a close-up of the head. `npx tauri icon` writes every size from the full picture, so run `python scripts/icons.py` after it. That script also writes the logo beside the app's name, `app/src/logo.png`. Cargo doesn't notice a changed `icon.ico`, so touch `app/src-tauri/build.rs` before an incremental build.
