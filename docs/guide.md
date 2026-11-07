@@ -37,7 +37,7 @@ Open **Settings** at the bottom left.
 | **Unreal Engine folder** | Already filled in for a normal install of Unreal Engine 5.1. If yours is elsewhere, select **Browse** and choose its `Engine` folder |
 | **Staging folder** | Where local test builds go. You only need this for [local testing](#test-a-build-locally) |
 
-Select **Save settings** when you're done.
+Select **Save settings** when you're done. The app then shows Pavlov's EULA from your modkit, and you have to accept it before you can do anything else. It asks again if the EULA changes.
 
 ### Connect mod.io
 

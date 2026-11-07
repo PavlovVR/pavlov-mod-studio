@@ -6,6 +6,7 @@ pub mod cook;
 pub mod create;
 pub mod definition;
 pub mod editor;
+pub mod eula;
 pub mod library;
 pub mod limits;
 pub mod manage;

@@ -8,6 +8,7 @@ use serde_json::Value;
 use zip::ZipArchive;
 
 use crate::api::{Api, GAME_ID};
+use crate::eula::require_eula;
 use crate::say;
 use crate::share::has_choice;
 
@@ -125,6 +126,7 @@ pub fn install_zip(zip_path: &Path, project: &Path, mod_id: u64) -> Result<()> {
 }
 
 pub fn download(api: &Api, project: &Path, mod_id: u64) -> Result<()> {
+    require_eula(project)?;
     // A share can hold part of a mod, so this would swap the real project for that part.
     if has_choice(project, mod_id) {
         bail!("You share this mod from this modkit, so downloading it would replace your project with the part you shared.");

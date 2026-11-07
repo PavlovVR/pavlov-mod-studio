@@ -119,6 +119,7 @@ If an upload stops, running the same command again resumes that release. It skip
 
 | Command | What it does |
 |---|---|
+| `eula` | Shows Pavlov's EULA from the modkit. Add `--accept` to accept it. Commands that use the modkit stop until you do |
 | `check-token` | Checks that mod.io accepts the token in `MODIO_TOKEN` |
 | `editor-status` | Shows whether Unreal is open and has unsaved work |
 | `restart-editor` | Restarts Unreal, which is how it loads a new mod. It asks about unsaved work first |

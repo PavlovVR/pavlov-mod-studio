@@ -9,6 +9,7 @@ use crate::assets::{
     cook_plan, remove_cooked, require_safe_selection, still_in_pak, CookPlan, Selection,
 };
 use crate::definition::{check_definition, mod_kind};
+use crate::eula::require_eula;
 use crate::package::{audit_pak, pak_files};
 use crate::process::{kind_of, run_tool, Failure, Tool};
 use crate::targets::{find_cook, plugin_rules, Target};
@@ -242,6 +243,7 @@ fn write_metadata(options: &CookOptions, stage: &Path) -> Result<()> {
 
 /// Build the PC client into a folder for offline testing, without touching mod.io.
 pub fn stage_local(options: &CookOptions, folder: &Path) -> Result<()> {
+    require_eula(&options.project)?;
     check_definition(&options.project, options.mod_id, &[Target::Windows])?;
     let rules = plugin_rules(&options.project, options.mod_id)?;
     let selection = require_safe_selection(&options.project, options.mod_id)?;
@@ -276,6 +278,7 @@ pub fn stage_local(options: &CookOptions, folder: &Path) -> Result<()> {
 
 /// Cook each target in order. The first failure stops the run, like the modkit.
 pub fn cook(options: &CookOptions, targets: &[Target]) -> Result<()> {
+    require_eula(&options.project)?;
     check_definition(&options.project, options.mod_id, targets)?;
     let rules = plugin_rules(&options.project, options.mod_id)?;
     crate::say!(

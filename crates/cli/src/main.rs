@@ -11,6 +11,7 @@ use pavlov_mod_core::cook::{cook, stage_local, CookOptions};
 use pavlov_mod_core::create::{create_mod, setup_plugin, ModKind, NewMod, Workspace};
 use pavlov_mod_core::definition::write_version;
 use pavlov_mod_core::editor::{editor_state, restart_editor};
+use pavlov_mod_core::eula::{accept_eula, read_eula};
 use pavlov_mod_core::library::{check_token, load_library, mod_status, AccessMemory};
 use pavlov_mod_core::manage::{self, all_files, edit_details, make_live, set_logo, ModEdit};
 use pavlov_mod_core::package::analyze_pak;
@@ -105,6 +106,8 @@ enum Command {
     SetupPlugin(SetupArgs),
     /// Set the version in a mod's definition, then confirm it from a fresh session.
     SetVersion(SetVersionArgs),
+    /// Show Pavlov's EULA from the modkit, or accept it with --accept. Nothing that uses the modkit runs until then.
+    Eula(EulaArgs),
     /// Check that mod.io accepts the token in MODIO_TOKEN.
     CheckToken,
     /// Show whether Unreal is open and has unsaved work.
@@ -137,6 +140,15 @@ struct PublishArgs {
     share_source: bool,
     #[arg(long, default_value = API_BASE, hide = true)]
     api_base: String,
+}
+
+#[derive(clap::Args)]
+struct EulaArgs {
+    /// Accept the EULA shown by this command
+    #[arg(long)]
+    accept: bool,
+    #[arg(long, default_value = ".")]
+    project: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -651,6 +663,17 @@ fn main() -> Result<()> {
                     asset.status,
                     if left_out { "  left out" } else { "" }
                 );
+            }
+            Ok(())
+        }
+        Command::Eula(args) => {
+            if args.accept {
+                accept_eula(&args.project)?;
+                println!("Accepted.");
+            } else {
+                let eula = read_eula(&args.project)?;
+                println!("{}", eula.text);
+                println!("Accepted: {}", if eula.accepted { "yes" } else { "no" });
             }
             Ok(())
         }

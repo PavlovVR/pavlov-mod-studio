@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
@@ -34,28 +35,36 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: app/package-lock.json
-      - uses: Swatinem/rust-cache@v2
       - name: Add rc.exe to PATH
         shell: pwsh
         run: |
           $rc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\rc.exe" | Sort-Object FullName | Select-Object -Last 1
           Add-Content $env:GITHUB_PATH $rc.DirectoryName
-      - name: Run the tests
-        run: |
-          cd app
-          npm ci
-          npx vite build
-          cd ..
-          cargo test
-          cargo build --release -p pavlov-mod-studio
-          python tests/upload_flow.py
-          python tests/manage_flow.py
+      - name: Install the interface's packages
+        working-directory: app
+        run: npm ci
       - name: Build the installer
         working-directory: app
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npx tauri build --config src-tauri/tauri.release.conf.json
+      # CI tests this same commit while the installer builds, so nothing is tested twice and
+      # nothing is published until those tests pass.
+      - name: Wait for CI to pass on this commit
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for ($i = 0; $i -lt 60; $i++) {
+            $run = @(gh run list --workflow ci.yml --commit $env:GITHUB_SHA --limit 1 --json status,conclusion --jq '.[0].status, .[0].conclusion')
+            if ($run[0] -eq 'completed') {
+              if ($run[1] -eq 'success') { exit 0 }
+              throw "CI failed on this commit, so nothing was released."
+            }
+            Start-Sleep -Seconds 15
+          }
+          throw "CI didn't finish on this commit, so nothing was released. Push the commit to main before tagging it."
       - name: Write the update manifest
         run: python scripts/update_manifest.py release
       - name: Publish the release

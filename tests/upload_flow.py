@@ -79,6 +79,20 @@ def run(*extra, env_token="T", timeout=120, group="quest"):
                            "--part-size", str(PART), "--poll-seconds", "0", "--skip-audit", *extra],
                           capture_output=True, text=True, env=env, timeout=timeout)
 
+# Nothing that uses the modkit runs until Pavlov's EULA is accepted, and accepting takes a real step.
+def eula(project_root, *extra):
+    return subprocess.run([str(BINARY), "eula", "--project", str(project_root), *extra], capture_output=True, text=True, timeout=60)
+
+r = run("--dry-run", env_token=None); assert r.returncode != 0 and "EULA" in r.stderr, r.stderr
+r = eula(root); assert r.returncode != 0 and "EULA.txt" in r.stderr, r.stderr
+(root / "Plugins/CustomMapTools").mkdir(parents=True)
+(root / "Plugins/CustomMapTools/EULA.txt").write_text("END USER LICENSE AGREEMENT")
+r = run("--dry-run", env_token=None); assert r.returncode != 0 and "EULA" in r.stderr, r.stderr
+assert S["puts"] == 0 and S["sessions"] == 0
+r = eula(root); assert r.returncode == 0 and "END USER LICENSE AGREEMENT" in r.stdout and "Accepted: no" in r.stdout, r.stdout
+r = eula(root, "--accept"); assert r.returncode == 0, r.stderr
+r = eula(root); assert "Accepted: yes" in r.stdout, r.stdout
+
 r = run("--dry-run", env_token=None); print(r.stdout, r.stderr); assert r.returncode == 0 and S["puts"] == 0
 r = run(env_token=None); assert r.returncode != 0 and "MODIO_TOKEN" in r.stderr
 
@@ -132,7 +146,9 @@ assert r.returncode != 0 and "777" in r.stderr and "exists on mod.io" in r.stder
 for field in ('name="name"', "Test map", 'name="summary"', 'name="tags[]"', 'name="metadata_blob"', 'name="logo"', "PNGDATA", "ModType"):
     assert field in S["created"], field
 assert 'name="visible"' not in S["created"], "normal mods must not send visible"
-hidden_root = root / "hidden"; (hidden_root / "Plugins").mkdir(parents=True)
+hidden_root = root / "hidden"; (hidden_root / "Plugins/CustomMapTools").mkdir(parents=True)
+(hidden_root / "Plugins/CustomMapTools/EULA.txt").write_text("END USER LICENSE AGREEMENT")
+assert eula(hidden_root, "--accept").returncode == 0
 r = cli("create", "Test map", "Map", "--summary", "A map", "--logo", str(logo), "--hidden", "--project", str(hidden_root), "--engine", str(root / "no-engine"))
 assert 'name="visible"' in S["created"], "hidden mods must send visible"
 r = cli("create", "ab", "Map", "--summary", "x", "--logo", str(logo), "--project", str(root)); assert r.returncode != 0 and "3-32" in r.stderr

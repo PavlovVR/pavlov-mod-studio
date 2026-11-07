@@ -6,6 +6,13 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+## 0.4.1
+
+### Added
+
+- The app shows Pavlov's EULA from your modkit, and does nothing until you accept it. A changed EULA is asked about again.
+- An `eula` command, and every command that uses the modkit stops until it's accepted.
+
 ## 0.4.0
 
 ### Added

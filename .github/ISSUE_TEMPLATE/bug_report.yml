@@ -13,7 +13,7 @@ body:
     attributes:
       label: App version
       description: It's in Settings, under Updates.
-      placeholder: "0.4.0"
+      placeholder: "0.4.1"
     validations:
       required: true
   - type: dropdown

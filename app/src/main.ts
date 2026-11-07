@@ -41,6 +41,7 @@ type SourceMod = { id: number; name: string; summary: string; author: string; lo
 type Tab = "overview" | "publish" | "cook" | "source" | "files" | "page" | "media" | "comments" | "team" | "advanced" | "size";
 type AssetStatus = "required" | "used" | "in_string" | "other_mods" | "unused" | "unknown";
 type ShareStatus = "needed" | "changed" | "added";
+type Eula = { text: string; accepted: boolean };
 type Asset = { path: string; size: number; status: AssetStatus; used_by: string[]; uses: number[]; outside: string[] };
 type Consumer = { mod_id: number; assets: number };
 type AssetReport = {
@@ -341,6 +342,8 @@ const state = {
   autoUpdate: !readFlag(MANUAL_UPDATES_SETTING),
   update: { status: "idle" as UpdateStatus, version: "", percent: null as number | null, error: "" },
   settingsNote: null as Note | null,
+  eula: null as Eula | null,
+  eulaNote: null as Note | null,
   accountNote: null as Note | null,
   mods: [] as LocalMod[],
   infos: {} as Record<number, ModInfo>,
@@ -2486,6 +2489,56 @@ function updatesHtml(): string {
     </section>`;
 }
 
+/* Pavlov's EULA */
+
+/** Nothing else is on offer until a modkit is chosen and its EULA is accepted. */
+function eulaLocked(): boolean {
+  return !state.eula?.accepted;
+}
+
+async function readEula(): Promise<void> {
+  state.eula = null;
+  state.eulaNote = null;
+  try {
+    state.eula = await invoke<Eula | null>("read_eula");
+  } catch (error) {
+    state.eulaNote = { ok: false, text: String(error) };
+  }
+}
+
+/** Everything that waits for the EULA. */
+async function unlock(): Promise<void> {
+  state.hasToken = await invoke<boolean>("has_token");
+  restoreLibrary();
+  await loadMods();
+}
+
+async function acceptEula(): Promise<void> {
+  try {
+    await invoke("accept_eula");
+    state.eula = { ...state.eula!, accepted: true };
+    state.note = null;
+    await unlock();
+    void loadLibrary();
+  } catch (error) {
+    state.note = { ok: false, text: String(error) };
+  }
+  render();
+}
+
+function eulaHtml(): string {
+  return `
+    <div class="mx-auto flex h-full max-w-3xl flex-col px-8 py-7">
+      ${pageHeader("Pavlov's End User License Agreement", "This is Vankrupt's agreement for the modkit. Accept it to use the modkit through this app.")}
+      ${noteHtml(state.note)}
+      <div id="eula-text" class="card min-h-0 flex-1 overflow-y-auto p-4 text-[13px] whitespace-pre-wrap select-text" tabindex="0">${escape(state.eula!.text)}</div>
+      <div class="mt-4 flex flex-wrap gap-2">
+        <button class="btn btn-primary" data-action="accept-eula">I accept</button>
+        <button class="btn btn-secondary" data-action="decline-eula">Close the app</button>
+      </div>
+    </div>`;
+}
+
 function settingsHtml(): string {
   const { project, engine, stage, username } = state.settingsDraft;
   const folder = (id: string, label: string, value: string, action: string) => `
@@ -2506,9 +2559,9 @@ function settingsHtml(): string {
         ${folder("engine", "Unreal Engine folder", engine, "browse-engine")}
         ${folder("stage", "Staging folder, for local testing", stage, "browse-stage")}
         <button class="btn btn-primary" data-action="save-settings">Save settings</button>
-        ${noteHtml(state.settingsNote)}
+        ${noteHtml(state.eulaNote ?? state.settingsNote)}
       </section>
-      <section class="card space-y-4 p-5">
+      ${eulaLocked() ? "" : `<section class="card space-y-4 p-5">
         <div class="flex items-center justify-between gap-3">
           <div>
             <h2 class="font-semibold">mod.io account</h2>
@@ -2519,7 +2572,7 @@ function settingsHtml(): string {
         ${state.hasToken ? (state.access.user && !state.settings.username ? "" : usernameHtml(username)) + usageHtml() : tokenHtml()}
         ${noteHtml(state.accountNote)}
       </section>
-      ${updatesHtml()}
+      ${updatesHtml()}`}
     </div>`;
 }
 
@@ -2666,7 +2719,8 @@ function syncMixed(): void {
 }
 
 function renderRail(): void {
-  morph(rail, railHtml());
+  if (eulaLocked()) rail.replaceChildren();
+  else morph(rail, railHtml());
 }
 
 let logTimer = 0;
@@ -2742,10 +2796,15 @@ function timeNote(): void {
 }
 
 function render(): void {
+  const gated = eulaLocked();
+  rail.classList.toggle("hidden", gated);
+  app.classList.toggle("grid-cols-[248px_minmax(0,1fr)]", !gated);
+  app.classList.toggle("grid-cols-1", gated);
   const entry = selectedEntry();
   const page = `${state.view} ${state.selectedId} ${entry ? activeTab(entry) : ""}`;
   const view =
-    state.view === "settings" ? settingsHtml()
+    gated ? (state.eula ? eulaHtml() : settingsHtml())
+    : state.view === "settings" ? settingsHtml()
     : state.view === "create" ? createHtml()
     : state.view === "source" ? sourceHtml()
     : entry ? modHtml(entry) : emptyHtml();
@@ -3534,7 +3593,11 @@ async function saveSettings(): Promise<void> {
     }
     state.settings = settings;
     state.settingsDraft = { ...settings };
-    await loadMods();
+    const wasLocked = eulaLocked();
+    await readEula();
+    if (eulaLocked()) return render();
+    if (wasLocked) await unlock();
+    else await loadMods();
     state.settingsNote = check?.problems.length
       ? { ok: false, text: `Settings saved, but check them. ${check.problems.join(" ")}` }
       : { ok: true, text: "Settings saved." };
@@ -3779,6 +3842,8 @@ async function handleClick(event: MouseEvent): Promise<void> {
       });
       return render();
     }
+    case "accept-eula": return void acceptEula();
+    case "decline-eula": return void invoke("quit_app");
     case "dismiss-note": state.note = null; return render();
     case "hide-access-hint":
       state.accessHintHidden = true;
@@ -4281,7 +4346,7 @@ async function refreshAfterRun(run: Run): Promise<void> {
 /** Coming back from Unreal or Explorer means the files may have changed. */
 let checkingFiles = false;
 window.addEventListener("focus", async () => {
-  if (checkingFiles) return;
+  if (checkingFiles || eulaLocked()) return;
   checkingFiles = true;
   await loadMods();
   const entry = selectedEntry();
@@ -4305,18 +4370,17 @@ document.addEventListener("keydown", (event) => {
 
 try {
   state.settings = await invoke<Settings>("load_settings");
-  state.hasToken = await invoke<boolean>("has_token");
-  restoreLibrary();
-  await loadMods();
+  await readEula();
+  if (!eulaLocked()) await unlock();
 } catch (error) {
   state.note = { ok: false, text: String(error) };
 }
-if (state.settings.project) render();
+if (state.eula) render();
 else showSettings();
 window.setInterval(() => {
   if (state.view === "settings") void readUsage().then(paintUsage);
 }, USAGE_SECONDS * 1000);
-void loadLibrary();
+if (!eulaLocked()) void loadLibrary();
 if (state.autoUpdate) void checkForUpdate(true);
 getVersion().then((version) => {
   state.version = version ?? "";

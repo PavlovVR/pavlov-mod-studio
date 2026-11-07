@@ -10,6 +10,7 @@ use pavlov_mod_core::community::{self, CommentPage, ModEvent, TeamMember};
 use pavlov_mod_core::cook::{stage_local, CookOptions};
 use pavlov_mod_core::create::{create_mod, setup_plugin, ModKind, NewMod, Workspace};
 use pavlov_mod_core::editor::{editor_state, restart_editor, save_work, EditorState};
+use pavlov_mod_core::eula::{accept_eula as accept_licence, read_eula as read_licence, Eula};
 use pavlov_mod_core::library::{
     check_folders as read_folders, check_token, load_library, local_mods, read_mod, AccessMemory,
     FolderCheck, Library, LocalMod, ModInfo,
@@ -204,6 +205,29 @@ fn load_settings(app: AppHandle) -> Result<Settings, String> {
 fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     let text_out = serde_json::to_string_pretty(&settings).map_err(text)?;
     fs::write(settings_path(&app)?, text_out).map_err(text)
+}
+
+/// The modkit's licence, or nothing until a modkit has been chosen.
+#[tauri::command]
+fn read_eula(app: AppHandle) -> Result<Option<Eula>, String> {
+    let settings = load_settings(app)?;
+    if settings.project.is_empty() {
+        return Ok(None);
+    }
+    read_licence(&PathBuf::from(settings.project))
+        .map(Some)
+        .map_err(text)
+}
+
+#[tauri::command]
+fn accept_eula(app: AppHandle) -> Result<(), String> {
+    let settings = load_settings(app)?;
+    accept_licence(&PathBuf::from(settings.project)).map_err(text)
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
 }
 
 #[tauri::command]
@@ -828,6 +852,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
+            read_eula,
+            accept_eula,
+            quit_app,
             check_folders,
             has_token,
             api_usage,

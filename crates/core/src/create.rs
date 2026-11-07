@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use crate::api::{Api, GAME_ID};
 use crate::definition::create_definition;
 use crate::editor::show_plugin_content;
+use crate::eula::require_eula;
 use crate::say;
 
 const ENGINE_VERSION: &str = "5.1.1";
@@ -163,6 +164,7 @@ fn write_plugin_files(dir: &Path, plugin: &str, kind: ModKind, icon: &Path) -> R
 /// Create the local plugin and definition. Safe to run again if it stopped midway,
 /// and refuses to touch a mod that already has a definition.
 pub fn setup_plugin(workspace: &Workspace, mod_id: u64, kind: ModKind) -> Result<()> {
+    require_eula(&workspace.project)?;
     let plugin = format!("UGC{mod_id}");
     let dir = workspace.project.join("Plugins").join(&plugin);
     if dir.join("Content/definition.uasset").exists() {
@@ -182,6 +184,7 @@ pub fn setup_plugin(workspace: &Workspace, mod_id: u64, kind: ModKind) -> Result
 /// The full Create button. If mod.io succeeds but local setup fails, the error
 /// names the id so setup can be retried without creating a duplicate mod.
 pub fn create_mod(api: &Api, workspace: &Workspace, new: &NewMod) -> Result<u64> {
+    require_eula(&workspace.project)?;
     let mod_id = create_on_modio(api, new)?;
     say!("created mod {mod_id} on mod.io");
     setup_plugin(workspace, mod_id, new.kind).with_context(|| {

@@ -102,13 +102,13 @@ For maintainers.
 
 1. Set the new version in `app/src-tauri/tauri.conf.json`, `Cargo.toml`, `app/package.json` and `app/package-lock.json`.
 2. Rename **Unreleased** in `CHANGELOG.md` to that version, and add a new empty **Unreleased**.
-3. Commit, then push a matching tag:
+3. Commit, push `main`, then push a matching tag:
 
 ```
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.1
+git push origin v0.4.1
 ```
 
-GitHub tests it, builds the installer, signs it and publishes the release with the changelog as its notes. Installed apps pick it up from there.
+GitHub builds and signs the installer while CI tests that commit, then publishes the release with the changelog as its notes. If CI fails, nothing is published. Installed apps pick it up from there.
 
 Releases need the `TAURI_SIGNING_PRIVATE_KEY` repository secret. Keep a safe copy of the key: installed apps only accept updates signed with it, so if it's lost, everyone has to reinstall by hand.

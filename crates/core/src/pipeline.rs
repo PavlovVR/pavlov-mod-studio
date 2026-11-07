@@ -9,6 +9,7 @@ use crate::api::Api;
 use crate::assets::{load_selection, selection_id};
 use crate::cook::{cook, CookOptions};
 use crate::definition::{check_definition, write_version};
+use crate::eula::require_eula;
 use crate::progress::stage;
 use crate::say;
 use crate::share::require_choice;
@@ -99,6 +100,7 @@ pub fn run(api: &Api, release: Release, targets: &[Target]) -> Result<()> {
     let path = checkpoint_path(&cook_options.project, mod_id);
 
     stage("check", None);
+    require_eula(&cook_options.project)?;
     check_definition(&cook_options.project, mod_id, targets)?;
     // A cook takes minutes, so find out now rather than at the end.
     if share_source {

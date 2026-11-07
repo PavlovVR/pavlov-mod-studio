@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use crate::api::{text_form, Api, GAME_ID};
 use crate::definition::mod_kind;
+use crate::eula::require_eula;
 use crate::manage::make_live;
 use crate::package::{audit_pak, build_zip, sha256};
 use crate::progress::{check_cancel, emit, Event};
@@ -93,6 +94,7 @@ impl ModBlob {
 
 /// Zip every build first, so a missing cook can't leave a half-finished upload.
 pub fn prepare(options: &Options, targets: &[Target]) -> Result<Vec<(Target, PathBuf)>> {
+    require_eula(&options.project)?;
     let rules = plugin_rules(&options.project, options.mod_id)?;
     let mut zips = Vec::new();
     for &target in targets {
@@ -198,6 +200,7 @@ pub fn publish(api: &Api, options: &Options, zips: &[(Target, PathBuf)]) -> Resu
 
 /// Share what the modder chose on mod.io, for content mods only like the modkit.
 pub fn upload_source(api: &Api, options: &Options) -> Result<()> {
+    require_eula(&options.project)?;
     let plugin = format!("UGC{}", options.mod_id);
     let dir = options.project.join("Plugins").join(&plugin);
     let bytes = fs::read(dir.join("Content/definition.uasset"))

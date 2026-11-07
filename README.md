@@ -136,7 +136,7 @@ Also in the app:
 **You need** Windows 10 or 11, the [Pavlov modkit](https://github.com/vankruptgames/PavlovVR-ModKit), Unreal Engine 5.1 and a [mod.io](https://mod.io) account.
 
 1. **[Download the installer](https://github.com/PavlovVR/pavlov-mod-studio/releases/latest)** and run it. It isn't code signed yet, so Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
-2. **Choose your modkit folder** in Settings, then select **Save settings**.
+2. **Choose your modkit folder** in Settings, select **Save settings**, and accept Pavlov's EULA.
 3. **Connect mod.io.** Select **Open mod.io**, then **Generate token**. Tick **All my mods**, **User actions**, **Read** and **Write**, set **Expiry** to **1 Year**, and paste the token into the app. The [guide](docs/guide.md#connect-modio) has every step.
 4. **Add your mod.io username** if Settings asks for it, so the app can hide mods you can't manage.
 5. **Pick a mod** and open the **Publish** tab.
