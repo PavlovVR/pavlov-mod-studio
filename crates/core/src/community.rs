@@ -72,10 +72,23 @@ fn to_comment(item: &Value) -> Option<Comment> {
     })
 }
 
-pub fn comments(api: &Api, mod_id: u64) -> Result<Vec<Comment>> {
+/// Some of a mod's comments. A popular mod has thousands, which is a request per hundred.
+#[derive(Serialize)]
+pub struct CommentPage {
+    pub comments: Vec<Comment>,
+    pub total: u64,
+    pub next: Option<u64>,
+}
+
+/// The newest comments from `offset`.
+pub fn comments(api: &Api, mod_id: u64, offset: u64) -> Result<CommentPage> {
     let path = format!("{}/comments", mod_path(mod_id));
-    let items = api.pages("list comments", &path, &[("_sort", "-id")])?;
-    Ok(items.iter().filter_map(to_comment).collect())
+    let (items, total, next) = api.page("list comments", &path, offset)?;
+    Ok(CommentPage {
+        comments: items.iter().filter_map(to_comment).collect(),
+        total,
+        next,
+    })
 }
 
 fn checked(content: &str) -> Result<&str> {

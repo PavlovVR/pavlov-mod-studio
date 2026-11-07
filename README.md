@@ -119,6 +119,7 @@ Also in the app:
 - **Source plugins.** Browse and download what other modders share, and share yours.
 - **Local testing.** Stage a build to a folder without touching mod.io.
 - **Keeps out of your way.** Unreal can stay open or closed while you publish, and the app follows your Windows light or dark setting.
+- **Stays inside mod.io's limits.** The app reads only what you open and paces itself under mod.io's request limit.
 - **Updates itself.** New versions install on launch, and never during a run. You can turn this off in Settings.
 
 ## Quick start
@@ -127,8 +128,8 @@ Also in the app:
 
 1. **[Download the installer](https://github.com/PavlovVR/pavlov-mod-studio/releases/latest)** and run it. It isn't code signed yet, so Windows SmartScreen may warn you: choose **More info**, then **Run anyway**.
 2. **Choose your modkit folder** in Settings, then select **Save settings**.
-3. **Connect mod.io.** Select **Open mod.io**, create a token under OAuth access with read and write access, and paste it into the app.
-4. **Add your mod.io username** so the app can hide mods you can't manage.
+3. **Connect mod.io.** Select **Open mod.io**, then **Generate token**. Tick **All my mods**, **User actions**, **Read** and **Write**, set **Expiry** to **1 Year**, and paste the token into the app. The [guide](docs/guide.md#connect-modio) has every step.
+4. **Add your mod.io username** if Settings asks for it, so the app can hide mods you can't manage.
 5. **Pick a mod** and open the **Publish** tab.
 
 <picture>
@@ -161,7 +162,7 @@ No. If Unreal is open, the app has it save the new version. If it's closed, the 
 <details>
 <summary><strong>Is my mod.io token safe?</strong></summary>
 
-It's encrypted for your Windows account and is only ever sent to mod.io. Tokens last a year, and the app tells you when yours runs out.
+It's encrypted for your Windows account and is only ever sent to mod.io. You choose how long it lasts, up to a year, and the app tells you when it runs out.
 </details>
 
 <details>

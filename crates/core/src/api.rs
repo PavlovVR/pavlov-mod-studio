@@ -6,12 +6,17 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Result};
 use reqwest::blocking::multipart::Form;
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 use serde_json::Value;
+
+use crate::limits::{self, Pass};
+use crate::progress::check_cancel;
 
 const MAX_RETRIES: u32 = 12;
 const QUICK_RETRIES: u32 = 3;
-const PAGE_SIZE: usize = 100;
+/// mod.io's ref for a limit on one endpoint. Every other 429 covers them all.
+const ENDPOINT_LIMIT: i64 = 11009;
+pub const PAGE_SIZE: usize = 100;
 /// Far beyond any real mod, so a bad total can't loop forever.
 const MAX_ITEMS: usize = 10_000;
 
@@ -116,7 +121,28 @@ impl Api {
         unreachable!("the loop always returns")
     }
 
-    /// Every item of a list, however many pages it takes.
+    /// Hold a request until it's allowed. Someone at the screen hears about a wait from mod.io
+    /// straight away, while a long job sits it out.
+    fn admit(&self, write: bool, endpoint: &str) -> Result<()> {
+        loop {
+            let wait = match limits::ask(write, endpoint) {
+                Pass::Go => return Ok(()),
+                Pass::Refused(wait) if self.retries == QUICK_RETRIES => {
+                    limits::announce(wait);
+                    bail!("{}", limits::wait_message(wait));
+                }
+                Pass::Paced(wait) | Pass::Refused(wait) => wait,
+            };
+            limits::announce(wait);
+            if self.retries != QUICK_RETRIES {
+                check_cancel()?;
+            }
+            sleep(wait.min(Duration::from_secs(1)));
+        }
+    }
+
+    /// Every item of a list, however many pages it takes. Only for lists that stay short,
+    /// because each page is a request: use `page` for files and comments.
     pub fn pages(&self, label: &str, path: &str, query: &[(&str, &str)]) -> Result<Vec<Value>> {
         let limit = PAGE_SIZE.to_string();
         let mut items = Vec::new();
@@ -138,6 +164,30 @@ impl Api {
         }
     }
 
+    /// One page of a list, newest first. Returns the items, the total on mod.io, and where
+    /// the next page starts if there is one.
+    pub fn page(
+        &self,
+        label: &str,
+        path: &str,
+        offset: u64,
+    ) -> Result<(Vec<Value>, u64, Option<u64>)> {
+        let limit = PAGE_SIZE.to_string();
+        let start = offset.to_string();
+        let page = self.send(label, &[], || {
+            self.client().get(self.url(path)).query(&[
+                ("_sort", "-id"),
+                ("_limit", limit.as_str()),
+                ("_offset", start.as_str()),
+            ])
+        })?;
+        let items = page["data"].as_array().cloned().unwrap_or_default();
+        let reached = offset + items.len() as u64;
+        let total = page["result_total"].as_u64().unwrap_or(reached);
+        let next = (!items.is_empty() && reached < total).then_some(reached);
+        Ok((items, total, next))
+    }
+
     /// Send a request, retrying only failures that can clear on their own.
     /// `accepted` lists mod.io error refs that count as success.
     pub fn send(
@@ -148,11 +198,15 @@ impl Api {
     ) -> Result<Value> {
         let mut delay = 2;
         for attempt in 1..=self.retries {
-            let result = build()
+            let request = build()
                 .bearer_auth(&self.token)
                 .header("Accept", "application/json")
-                .send();
-            let reason = match result {
+                .build()?;
+            let write = request.method() != Method::GET;
+            let endpoint = limits::endpoint(request.method().as_str(), request.url().path());
+            self.admit(write, &endpoint)?;
+            let mut limited = false;
+            let reason = match self.client.execute(request) {
                 Err(e) => e.to_string(),
                 Ok(response) => {
                     let status = response.status();
@@ -161,8 +215,7 @@ impl Api {
                         .get("Retry-After")
                         .and_then(|v| v.to_str().ok())
                         .and_then(|v| v.parse::<u64>().ok())
-                        // mod.io sends 0 for a rolling limit and advises waiting a minute.
-                        .filter(|seconds| *seconds > 0);
+                        .unwrap_or(0);
                     let text = response.text().unwrap_or_default();
                     if status.is_success() {
                         return Ok(serde_json::from_str(&text).unwrap_or(Value::Null));
@@ -174,10 +227,14 @@ impl Api {
                         return Ok(serde_json::json!({ "error_ref": found }));
                     }
                     if status == StatusCode::TOO_MANY_REQUESTS {
+                        let only_here = error_ref == Some(ENDPOINT_LIMIT);
+                        let wait =
+                            limits::refused(retry_after, only_here.then_some(endpoint.as_str()));
+                        limits::announce(wait);
                         if self.retries == QUICK_RETRIES {
-                            bail!("mod.io is limiting requests. Try again in a minute.");
+                            bail!("{}", limits::wait_message(wait));
                         }
-                        delay = delay.max(retry_after.unwrap_or(60));
+                        limited = true;
                     } else if status.is_client_error() {
                         bail!("{}", describe(label, status.as_u16(), &text));
                     }
@@ -186,6 +243,11 @@ impl Api {
             };
             if attempt == self.retries {
                 return Err(anyhow!("{label} failed after {attempt} tries: {reason}"));
+            }
+            // The next pass through `admit` already waits as long as mod.io said to.
+            if limited {
+                crate::say!("  mod.io asked us to wait ({reason})");
+                continue;
             }
             crate::say!(
                 "  retry {attempt}/{} in {delay}s ({reason})",
@@ -206,8 +268,9 @@ fn describe(label: &str, status: u16, body: &str) -> String {
     let error = &parsed["error"];
     let known = match error["error_ref"].as_i64() {
         Some(11003) => {
-            Some("Your mod.io token can't make changes. Make one with read and write access in Settings.")
+            Some("Your mod.io token can't make changes. Make a new one with Read and Write ticked, using the steps in Settings.")
         }
+        Some(11139) => Some("Your mod.io token doesn't cover this. Make a new one with All my mods and User actions ticked, using the steps in Settings."),
         Some(11005) => Some(EXPIRED),
         Some(11006) => Some("Your mod.io account is not active."),
         Some(15007 | 15008) => {

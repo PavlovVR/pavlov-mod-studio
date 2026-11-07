@@ -2,9 +2,10 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::{Api, GAME_ID};
@@ -69,16 +70,62 @@ pub struct ModStatus {
     pub platforms: Vec<PlatformState>,
 }
 
+/// The folders Settings would save, once checked.
+#[derive(Serialize)]
+pub struct FolderCheck {
+    /// Unreal's folder, moved down into `Engine` if the folder above it was chosen.
+    pub engine: String,
+    pub problems: Vec<String>,
+}
+
+const UNREAL: &str = "Binaries/Win64/UnrealEditor-Cmd.exe";
+
+/// Catch a wrong folder when it's chosen, instead of at the first cook.
+pub fn check_folders(project: &Path, engine: &Path) -> FolderCheck {
+    let mut problems = Vec::new();
+    if !project.as_os_str().is_empty() && !project.join("Pavlov.uproject").is_file() {
+        problems.push("The modkit folder doesn't have Pavlov.uproject in it.".to_string());
+    }
+    let inner = engine.join("Engine");
+    let engine = if !engine.join(UNREAL).is_file() && inner.join(UNREAL).is_file() {
+        inner
+    } else {
+        engine.to_path_buf()
+    };
+    if !engine.join(UNREAL).is_file() {
+        problems.push(
+            "Unreal isn't in that folder. Choose the Engine folder inside UE_5.1.".to_string(),
+        );
+    }
+    FolderCheck {
+        engine: engine.to_string_lossy().into_owned(),
+        problems,
+    }
+}
+
 pub fn mod_status(api: &Api, mod_id: u64) -> Result<ModStatus> {
     let path = format!("/games/{GAME_ID}/mods/{mod_id}");
     let details = api.send("read mod", &[], || api.client().get(api.url(&path)))?;
-    let files_path = format!("{path}/files");
-    let files = api.pages("list files", &files_path, &[("_sort", "-id")])?;
+    let empty = Vec::new();
+    let live: Vec<String> = details["platforms"]
+        .as_array()
+        .unwrap_or(&empty)
+        .iter()
+        .filter_map(|p| p["modfile_live"].as_i64())
+        .map(|id| id.to_string())
+        .collect();
+    // Only the live files matter here, and a mod can have thousands of others.
+    let files = if live.is_empty() {
+        Vec::new()
+    } else {
+        let ids = live.join(",");
+        let files_path = format!("{path}/files");
+        api.pages("list files", &files_path, &[("id-in", ids.as_str())])?
+    };
     let versions: HashMap<i64, String> = files
         .iter()
         .filter_map(|f| Some((f["id"].as_i64()?, f["version"].as_str()?.to_string())))
         .collect();
-    let empty = Vec::new();
     let platforms = details["platforms"]
         .as_array()
         .unwrap_or(&empty)
@@ -282,6 +329,44 @@ fn on_team(api: &Api, mod_id: u64, username: &str) -> Result<bool> {
         .any(|member| member.username.eq_ignore_ascii_case(username)))
 }
 
+/// How long a team answer is trusted. Teams rarely change, and asking costs a request per mod.
+const TEAM_MEMORY_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+/// What mod.io has already said about this account, so it isn't asked again on every launch.
+#[derive(Default, Serialize, Deserialize)]
+pub struct AccessMemory {
+    #[serde(default)]
+    pub username: String,
+    /// mod.io refused `/me`, which won't change for this token.
+    #[serde(default)]
+    pub no_account: bool,
+    /// Whether the user is on each mod's team, and when that was read.
+    #[serde(default)]
+    pub teams: HashMap<u64, (bool, u64)>,
+}
+
+impl AccessMemory {
+    fn for_user(&mut self, username: &str) {
+        if !self.username.eq_ignore_ascii_case(username) {
+            self.username = username.to_string();
+            self.teams.clear();
+        }
+    }
+
+    fn on_team(&self, mod_id: u64, now: u64) -> Option<bool> {
+        self.teams
+            .get(&mod_id)
+            .filter(|(_, read)| now.saturating_sub(*read) < TEAM_MEMORY_SECONDS)
+            .map(|(mine, _)| *mine)
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
 /// Everything the app shows in its mod list, and which of those mods the user can manage.
 #[derive(Serialize)]
 pub struct Library {
@@ -307,9 +392,19 @@ pub fn check_token(api: &Api) -> Result<()> {
     Ok(())
 }
 
-pub fn load_library(api: &Api, local: &[u64], username: Option<&str>) -> Result<Library> {
+pub fn load_library(
+    api: &Api,
+    local: &[u64],
+    username: Option<&str>,
+    memory: &mut AccessMemory,
+) -> Result<Library> {
     let mut note = None;
-    let mine = match account_name(api) {
+    let account = if memory.no_account {
+        Ok(None)
+    } else {
+        account_name(api)
+    };
+    let mine = match account {
         Ok(Some(user)) => {
             let query = [("game_id", GAME_ID.to_string())];
             let query: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -321,7 +416,10 @@ pub fn load_library(api: &Api, local: &[u64], username: Option<&str>) -> Result<
                 }
             }
         }
-        Ok(None) => None,
+        Ok(None) => {
+            memory.no_account = true;
+            None
+        }
         Err(error) => {
             note = Some(format!("{error:#}"));
             None
@@ -355,9 +453,32 @@ pub fn load_library(api: &Api, local: &[u64], username: Option<&str>) -> Result<
             note,
         });
     };
+    memory.for_user(username);
+    let now = unix_now();
     let mut owned = Vec::new();
+    let mut stopped = false;
     for item in &mods {
-        if item.author.eq_ignore_ascii_case(username) || on_team(api, item.id, username)? {
+        let mine = if item.author.eq_ignore_ascii_case(username) {
+            true
+        } else if let Some(mine) = memory.on_team(item.id, now) {
+            mine
+        } else if stopped {
+            // Nothing is hidden when the answer isn't known, and mod.io still checks every change.
+            true
+        } else {
+            match on_team(api, item.id, username) {
+                Ok(mine) => {
+                    memory.teams.insert(item.id, (mine, now));
+                    mine
+                }
+                Err(error) => {
+                    stopped = true;
+                    note = Some(format!("{error:#}"));
+                    true
+                }
+            }
+        };
+        if mine {
             owned.push(item.id);
         }
     }
@@ -372,9 +493,33 @@ pub fn load_library(api: &Api, local: &[u64], username: Option<&str>) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use serde_json::json;
 
-    use super::to_mod_info;
+    use super::{check_folders, to_mod_info, UNREAL};
+
+    #[test]
+    fn folders_are_checked_when_chosen() {
+        let dir = std::env::temp_dir().join(format!("pms-folders-{}", std::process::id()));
+        let project = dir.join("modkit");
+        let engine = dir.join("UE_5.1").join("Engine");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(engine.join("Binaries/Win64")).unwrap();
+        fs::write(project.join("Pavlov.uproject"), "{}").unwrap();
+        fs::write(engine.join(UNREAL), "").unwrap();
+        assert!(check_folders(&project, &engine).problems.is_empty());
+        // The folder above Engine is the one people pick.
+        let above = check_folders(&project, &dir.join("UE_5.1"));
+        assert!(above.problems.is_empty());
+        assert_eq!(above.engine, engine.to_string_lossy());
+        assert_eq!(check_folders(&dir, &dir).problems.len(), 2);
+        // No modkit chosen yet isn't a mistake.
+        assert!(check_folders(std::path::Path::new(""), &engine)
+            .problems
+            .is_empty());
+        fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn reads_a_mod_as_mod_io_sends_it() {

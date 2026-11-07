@@ -34,26 +34,37 @@ Open **Settings** at the bottom left.
 | Folder | What it's for |
 |---|---|
 | **Modkit folder** | The folder containing `Pavlov.uproject` |
-| **Unreal Engine folder** | Already filled in for a normal install of Unreal Engine 5.1 |
+| **Unreal Engine folder** | Already filled in for a normal install of Unreal Engine 5.1. If yours is elsewhere, select **Browse** and choose its `Engine` folder |
 | **Staging folder** | Where local test builds go. You only need this for [local testing](#test-a-build-locally) |
 
 Select **Save settings** when you're done.
 
 ### Connect mod.io
 
-The app uses a mod.io personal token.
+The app uses a mod.io personal token, which you make on mod.io.
 
-1. Select **Open mod.io**, which opens your access page. Log in if you need to.
-2. Under OAuth access, create a token. Name it anything, and give it read and write access.
-3. Copy the token, paste it into the app and select **Connect**.
+1. Select **Open mod.io**, which opens the **Personal access tokens** tab of your access page. Log in if you need to.
+2. If mod.io asks you to agree to its API Access Terms, do that first. **Generate token** stays off until you do.
+3. Select **Generate token** and fill in the form:
 
-The app checks the token with mod.io before keeping it. It's encrypted for your Windows account and is only ever sent to mod.io.
+   | Field | What to choose |
+   |---|---|
+   | **Token name** | Anything, such as Mod Studio |
+   | **My resources** | Leave it empty |
+   | **Permissions** | Tick **All my mods** and **User actions** |
+   | **Scope** | Tick **Read** and **Write**. Only Read is ticked at first, and that can't publish |
+   | **Expiry** | **1 Year**. It starts on 30 Days |
 
-Tokens last a year. When yours runs out the app says so, and you make a new one the same way.
+4. Select **Generate** and copy the token. mod.io only shows it once.
+5. Paste it into the app and select **Connect**.
+
+The app checks the token with mod.io before keeping it. That only proves the token is real, not which boxes you ticked, so a token without Write still connects and then fails at your first change. It's encrypted for your Windows account and is only ever sent to mod.io.
+
+When your token runs out the app says so, and you make a new one the same way.
 
 ### Add your username
 
-Once you're connected, enter your **mod.io username** and select **Save**. A personal token can't show who it belongs to, so this is how the app knows which mods are yours. Without it, every mod in your modkit is shown, including ones you can't manage.
+If Settings asks for your **mod.io username** once you're connected, enter it and select **Save**. A personal token can't always show who it belongs to, so this is how the app knows which mods are yours. Without it, every mod in your modkit is shown, including ones you can't manage.
 
 ## Publish a mod
 
@@ -152,7 +163,11 @@ If a kept asset points at something you left out, a warning appears with **Keep 
 
 ## Manage a mod
 
-Each mod loads once, so switching between mods is instant. **Refresh** reads the latest from mod.io.
+Each mod loads the first time you open it, and switching back to it is instant. **Refresh** reads the latest from mod.io, and rests for a few seconds after each click.
+
+Files and comments load a page at a time, so a mod with thousands of them still opens quickly. Select **Show more** for the rest.
+
+mod.io limits how many requests an account can make each minute. The app paces itself under that limit, and Settings shows how much of it you've used. If mod.io ever asks it to wait, the sidebar counts down and the app carries on by itself.
 
 | Tab | What you can do |
 |---|---|
@@ -200,9 +215,12 @@ Every update is signed, and the app refuses anything that doesn't match.
 | What you see | What to do |
 |---|---|
 | **mod.io didn't accept that token** | Copy it again without any extra spaces, or make a new one |
-| **Your mod.io token has expired** | Tokens last a year. Disconnect in Settings and connect with a new one |
-| **Your mod.io token can't make changes** | Make a new token with read and write access |
+| **Your mod.io token has expired** | Disconnect in Settings and connect with a new one |
+| **Your mod.io token can't make changes** | Make a new token with **Read** and **Write** ticked |
+| **Your mod.io token doesn't cover this** | Make a new token with **All my mods** and **User actions** ticked |
 | **All mods are shown** | Add your mod.io username in Settings |
+| **Waiting on mod.io's request limit** | Nothing. The app counts down and carries on by itself |
+| **Settings saved, but check them** | A folder doesn't look right. The message says which one |
 | **A new mod isn't in Unreal** | Restart Unreal, which is how it loads new plugins |
 | **Unreal is open and has this mod's definition loaded, but it didn't answer** | Close Unreal and publish again |
 | **A pak contains files from outside this mod** | The build picked up another mod's or the base game's files, so it stopped before uploading. Look for references to them in your mod |

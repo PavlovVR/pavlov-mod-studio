@@ -40,7 +40,7 @@ fn to_source_mod(item: &Value) -> Option<SourceMod> {
     })
 }
 
-/// `sort` takes mod.io values, such as `-date_live`, `downloads` or `name`.
+/// `sort` takes mod.io values, such as `-date_live`, `-downloads_total` or `name`.
 pub fn browse(api: &Api, search: &str, sort: &str, offset: u64, limit: u64) -> Result<SourcePage> {
     let path = format!("/games/{GAME_ID}/mods");
     let pattern = format!("*{}*", search.trim());

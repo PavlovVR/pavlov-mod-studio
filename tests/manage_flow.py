@@ -1,5 +1,5 @@
 """Local fake mod.io: checks every management call's method, path, format and failure handling."""
-import json, os, re, subprocess, sys, tempfile, threading
+import json, os, re, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -14,15 +14,17 @@ def listing(id, name, author):
             "submitted_by": {"username": author}, "stats": {"downloads_total": 5, "subscribers_total": 2}}
 
 
-S = dict(requests=[], me_status=200, refuse=None, flaky=0, file_pages=0, bad_token=False)
+S = dict(requests=[], me_status=200, refuse=None, flaky=0, file_pages=0, bad_token=False, limited=[], live=[])
 
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
-    def out(self, code, obj=None):
+    def out(self, code, obj=None, retry_after=None):
         body = b"" if obj is None else json.dumps(obj).encode()
         self.send_response(code)
+        if retry_after is not None:
+            self.send_header("retry-after", str(retry_after))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -49,7 +51,10 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         p, q = url.path, parse_qs(url.query)
-        S["requests"].append(dict(method="GET", path=p, query=q))
+        S["requests"].append(dict(method="GET", path=p, query=q, at=time.monotonic()))
+        if S["limited"]:
+            seconds, ref = S["limited"].pop(0)
+            return self.out(429, {"error": {"code": 429, "error_ref": ref, "message": "slow down"}}, retry_after=seconds)
         if S["flaky"] > 0:
             S["flaky"] -= 1
             return self.out(503, {})
@@ -70,6 +75,11 @@ class H(BaseHTTPRequestHandler):
         if p.endswith("/team"):
             member = [{"user": USER, "level": 8, "position": "Founder", "invite_pending": 0}]
             return self.out(200, {"data": member if "/mods/2/" in p or "/mods/99/" in p else [], "result_total": 1})
+        if p == MOD:
+            return self.out(200, {**listing(99, "Mine", "Hyp"), "platforms": [{"platform": "windows", "modfile_live": id} for id in S["live"]]})
+        if p == f"{MOD}/files" and "id-in" in q:
+            ids = [int(i) for i in q["id-in"][0].split(",")]
+            return self.out(200, {"data": [{"id": i, "version": f"v{i}", "platforms": []} for i in ids], "result_total": len(ids)})
         if p == f"{MOD}/files":
             # Two pages, to prove nothing past the first hundred is lost.
             S["file_pages"] += 1
@@ -237,6 +247,29 @@ with tempfile.TemporaryDirectory() as project:
     assert "0 assets left out" in cli("exclude", 99, "--clear", *where)
     assert not saved.exists()
 
+# mod.io's limit. After a 429, nothing more is sent until the wait is over.
+S["requests"].clear()
+S["limited"] = [(2, 11008)]
+assert "Founder" in cli("team", 99)
+sent = S["requests"]
+assert len(sent) == 2, [r["path"] for r in sent]
+assert sent[1]["at"] - sent[0]["at"] >= 1.9, sent[1]["at"] - sent[0]["at"]
+
+# A limit on one endpoint is waited out the same way.
+S["requests"].clear()
+S["limited"] = [(1, 11009)]
+assert "Founder" in cli("team", 99)
+assert len(S["requests"]) == 2
+
+# What's live costs one read of the mod and one of its live files, however many files it has.
+S["requests"].clear()
+S["live"] = [4001, 4002]
+out = cli("status", 99)
+assert "version v4001" in out and "version v4002" in out, out
+assert [r["path"] for r in S["requests"]] == [MOD, f"{MOD}/files"], [r["path"] for r in S["requests"]]
+assert S["requests"][1]["query"]["id-in"] == ["4001,4002"], S["requests"][1]["query"]
+S["live"] = []
+
 # Refusals read as advice rather than raw JSON.
 S["refuse"] = (403, 15009)
 out = cli("delete-file", 99, 1, ok=False)
@@ -246,7 +279,9 @@ assert "not on this mod's team" in cli("hide", 99, ok=False)
 S["refuse"] = (401, 11005)
 assert "Make a new one in Settings" in cli("hide", 99, ok=False)
 S["refuse"] = (401, 11003)
-assert "read and write access" in cli("hide", 99, ok=False)
+assert "Read and Write ticked" in cli("hide", 99, ok=False)
+S["refuse"] = (403, 11139)
+assert "All my mods and User actions" in cli("hide", 99, ok=False)
 S["refuse"] = None
 
 # A token is tried before it's kept, and a bad one is told apart from an expired one.

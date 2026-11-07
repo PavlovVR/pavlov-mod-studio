@@ -44,11 +44,47 @@ fn mod_path(mod_id: u64) -> String {
     format!("/games/{GAME_ID}/mods/{mod_id}")
 }
 
-pub fn list_files(api: &Api, mod_id: u64) -> Result<Vec<ModFile>> {
+/// Some of a mod's files. A mod with hundreds of versions has thousands of them, so reading
+/// them all would cost dozens of requests.
+#[derive(Serialize)]
+pub struct FilePage {
+    pub files: Vec<ModFile>,
+    pub total: u64,
+    pub next: Option<u64>,
+}
+
+/// The newest files from `offset`. The first page also finds any live file too old to be on
+/// it, because the app shows what's live whatever else has been uploaded since.
+pub fn list_files(api: &Api, mod_id: u64, offset: u64, live: &[i64]) -> Result<FilePage> {
     let path = format!("{}/files", mod_path(mod_id));
-    let files = api.pages("list files", &path, &[("_sort", "-id")])?;
+    let (items, total, next) = api.page("list files", &path, offset)?;
+    let mut files = to_files(&items);
+    let older: Vec<String> = live
+        .iter()
+        .filter(|id| !files.iter().any(|file| file.id == **id))
+        .map(i64::to_string)
+        .collect();
+    if offset == 0 && next.is_some() && !older.is_empty() {
+        let ids = older.join(",");
+        let found = api.pages("list files", &path, &[("id-in", ids.as_str())])?;
+        files.extend(to_files(&found));
+    }
+    Ok(FilePage { files, total, next })
+}
+
+/// Every file of a mod, for when someone asks for all of them.
+pub fn all_files(api: &Api, mod_id: u64) -> Result<Vec<ModFile>> {
+    let path = format!("{}/files", mod_path(mod_id));
+    Ok(to_files(&api.pages(
+        "list files",
+        &path,
+        &[("_sort", "-id")],
+    )?))
+}
+
+fn to_files(files: &[Value]) -> Vec<ModFile> {
     let empty = Vec::new();
-    Ok(files
+    files
         .iter()
         .filter_map(|file| {
             Some(ModFile {
@@ -76,7 +112,7 @@ pub fn list_files(api: &Api, mod_id: u64) -> Result<Vec<ModFile>> {
                 download: file["download"]["binary_url"].as_str().map(str::to_string),
             })
         })
-        .collect())
+        .collect()
 }
 
 /// Make a file live for its platforms. This is also how a release is rolled back.

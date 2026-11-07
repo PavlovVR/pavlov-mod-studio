@@ -96,7 +96,7 @@ If an upload stops, running the same command again resumes that release. It skip
 | `add-links <mod>` | Adds `--youtube` or `--sketchfab` links |
 | `remove-media <mod>` | Removes `--image`, `--youtube` or `--sketchfab` items |
 | `reorder-images <mod> <names>` | Sets the order, listing every image file name |
-| `comments <mod>` | Lists comments |
+| `comments <mod>` | Lists the newest hundred comments. `--offset` reads further back |
 | `comment <mod> <text>` | Posts a comment, or a reply with `--reply-to <id>` |
 | `delete-comment <mod> <id>` | Deletes a comment |
 | `team <mod>` | Lists the team |

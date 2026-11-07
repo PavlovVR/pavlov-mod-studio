@@ -6,15 +6,17 @@ use pavlov_mod_core::assets::{
     analyze_assets, asset_report, assets_in_pak, check_selection, save_selection, AssetReport,
     MissingReference, Selection,
 };
-use pavlov_mod_core::community::{self, Comment, ModEvent, TeamMember};
+use pavlov_mod_core::community::{self, CommentPage, ModEvent, TeamMember};
 use pavlov_mod_core::cook::{stage_local, CookOptions};
 use pavlov_mod_core::create::{create_mod, setup_plugin, ModKind, NewMod, Workspace};
 use pavlov_mod_core::editor::{editor_state, restart_editor, save_work, EditorState};
 use pavlov_mod_core::library::{
-    check_token, load_library, local_mods, read_mod, Library, LocalMod, ModInfo,
+    check_folders as read_folders, check_token, load_library, local_mods, read_mod, AccessMemory,
+    FolderCheck, Library, LocalMod, ModInfo,
 };
+use pavlov_mod_core::limits;
 use pavlov_mod_core::manage::{
-    self, list_files, make_live, set_logo, MediaList, MetadataPair, ModEdit, ModFile,
+    self, list_files, make_live, set_logo, FilePage, MediaList, MetadataPair, ModEdit,
 };
 use pavlov_mod_core::package::{analyze_pak, pak_files, PakReport};
 use pavlov_mod_core::pipeline::{self, discard_pending, pending_version, Release};
@@ -66,6 +68,12 @@ fn token_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(text)?;
     fs::create_dir_all(&dir).map_err(text)?;
     Ok(dir.join("token.bin"))
+}
+
+/// What mod.io has said about this account. It belongs to the token, so it goes with it.
+fn access_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(text)?;
+    Ok(dir.join("access.json"))
 }
 
 fn read_token(app: &AppHandle) -> Result<String, String> {
@@ -195,6 +203,11 @@ fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn check_folders(project: String, engine: String) -> FolderCheck {
+    read_folders(&PathBuf::from(project), &PathBuf::from(engine))
+}
+
+#[tauri::command]
 fn has_token(app: AppHandle) -> bool {
     read_token(&app).is_ok()
 }
@@ -205,11 +218,14 @@ fn save_token(app: AppHandle, token: String) -> Result<(), String> {
     if token.is_empty() {
         return Err("The token is empty.".to_string());
     }
-    fs::write(token_path(&app)?, protect(token.as_bytes())?).map_err(text)
+    fs::write(token_path(&app)?, protect(token.as_bytes())?).map_err(text)?;
+    fs::remove_file(access_path(&app)?).ok();
+    Ok(())
 }
 
 #[tauri::command]
 fn remove_token(app: AppHandle) -> Result<(), String> {
+    fs::remove_file(access_path(&app)?).ok();
     match fs::remove_file(token_path(&app)?) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -234,7 +250,23 @@ fn list_mods(project: String) -> Result<Vec<LocalMod>, String> {
 
 #[tauri::command]
 async fn library(app: AppHandle, ids: Vec<u64>, username: String) -> Result<Library, String> {
-    quick(app, move |api| load_library(api, &ids, Some(&username))).await
+    let path = access_path(&app)?;
+    quick(app, move |api| {
+        let mut memory: AccessMemory = fs::read_to_string(&path)
+            .ok()
+            .and_then(|saved| serde_json::from_str(&saved).ok())
+            .unwrap_or_default();
+        let library = load_library(api, &ids, Some(&username), &mut memory);
+        fs::write(&path, serde_json::to_string(&memory)?).ok();
+        library
+    })
+    .await
+}
+
+/// What this app has used of mod.io's limits. This doesn't ask mod.io anything.
+#[tauri::command]
+fn api_usage() -> limits::Usage {
+    limits::usage()
 }
 
 #[tauri::command]
@@ -306,8 +338,13 @@ async fn download_source(app: AppHandle, mod_id: u64) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn mod_files(app: AppHandle, mod_id: u64) -> Result<Vec<ModFile>, String> {
-    quick(app, move |api| list_files(api, mod_id)).await
+async fn mod_files(
+    app: AppHandle,
+    mod_id: u64,
+    offset: u64,
+    live: Vec<i64>,
+) -> Result<FilePage, String> {
+    quick(app, move |api| list_files(api, mod_id, offset, &live)).await
 }
 
 #[tauri::command]
@@ -447,8 +484,8 @@ async fn remove_metadata(
 }
 
 #[tauri::command]
-async fn mod_comments(app: AppHandle, mod_id: u64) -> Result<Vec<Comment>, String> {
-    quick(app, move |api| community::comments(api, mod_id)).await
+async fn mod_comments(app: AppHandle, mod_id: u64, offset: u64) -> Result<CommentPage, String> {
+    quick(app, move |api| community::comments(api, mod_id, offset)).await
 }
 
 #[tauri::command]
@@ -692,6 +729,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_config_dir() {
+                limits::remember_in(dir.join("mod-io-wait.txt"));
+            }
             let handle = app.handle().clone();
             set_sink(move |event| {
                 let _ = handle.emit("progress", event);
@@ -701,7 +741,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_settings,
             save_settings,
+            check_folders,
             has_token,
+            api_usage,
             save_token,
             remove_token,
             check_mod_token,

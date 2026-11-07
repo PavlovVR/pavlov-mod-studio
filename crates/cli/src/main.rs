@@ -11,8 +11,8 @@ use pavlov_mod_core::cook::{cook, stage_local, CookOptions};
 use pavlov_mod_core::create::{create_mod, setup_plugin, ModKind, NewMod, Workspace};
 use pavlov_mod_core::definition::write_version;
 use pavlov_mod_core::editor::{editor_state, restart_editor};
-use pavlov_mod_core::library::{check_token, load_library, mod_status};
-use pavlov_mod_core::manage::{self, edit_details, list_files, make_live, set_logo, ModEdit};
+use pavlov_mod_core::library::{check_token, load_library, mod_status, AccessMemory};
+use pavlov_mod_core::manage::{self, all_files, edit_details, make_live, set_logo, ModEdit};
 use pavlov_mod_core::package::analyze_pak;
 use pavlov_mod_core::pipeline::{self, Release};
 use pavlov_mod_core::progress::set_verbose;
@@ -77,7 +77,7 @@ enum Command {
     /// List a mod's team.
     Team(ModArg),
     /// List a mod's comments.
-    Comments(ModArg),
+    Comments(CommentsArgs),
     /// Post a comment, or a reply with --reply-to.
     Comment(CommentArgs),
     /// Delete a comment.
@@ -134,6 +134,14 @@ struct PublishArgs {
     share_source: bool,
     #[arg(long, default_value = API_BASE, hide = true)]
     api_base: String,
+}
+
+#[derive(clap::Args)]
+struct CommentsArgs {
+    mod_id: u64,
+    /// Skip this many of the newest comments.
+    #[arg(long, default_value_t = 0)]
+    offset: u64,
 }
 
 #[derive(clap::Args)]
@@ -583,7 +591,13 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Mods(args) => {
-            let library = load_library(&token_api()?, &args.ids, args.username.as_deref())?;
+            let mut memory = AccessMemory::default();
+            let library = load_library(
+                &token_api()?,
+                &args.ids,
+                args.username.as_deref(),
+                &mut memory,
+            )?;
             if let Some(note) = &library.note {
                 println!("note: {note}");
             }
@@ -713,8 +727,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Comments(args) => {
-            for comment in community::comments(&token_api()?, args.mod_id)? {
+            let page = community::comments(&token_api()?, args.mod_id, args.offset)?;
+            for comment in &page.comments {
                 println!("{}  {}: {}", comment.id, comment.username, comment.content);
+            }
+            if let Some(next) = page.next {
+                println!("{} in total. Add --offset {next} for more.", page.total);
             }
             Ok(())
         }
@@ -748,7 +766,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Files(args) => {
-            for file in list_files(&token_api()?, args.mod_id)? {
+            for file in all_files(&token_api()?, args.mod_id)? {
                 println!(
                     "{}  v{}  {:?}  {} bytes  scanned={}",
                     file.id, file.version, file.platforms, file.filesize, file.scanned

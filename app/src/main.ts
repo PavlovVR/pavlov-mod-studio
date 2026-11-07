@@ -5,6 +5,7 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import morphdom from "morphdom";
+import logo from "./logo.png";
 import "./styles.css";
 
 type LocalMod = { id: number; name: string; kind: string; source: boolean };
@@ -32,6 +33,10 @@ type ModEvent = { id: number; user_id: number; date_added: number; event_type: s
 type MetadataPair = { key: string; value: string };
 type PakItem = { name: string; bytes: number };
 type PakReport = { files: number; total_bytes: number; folders: PakItem[]; largest: PakItem[] };
+type FilePage = { files: ModFile[]; total: number; next: number | null };
+type CommentPage = { comments: Comment[]; total: number; next: number | null };
+type FolderCheck = { engine: string; problems: string[] };
+type Usage = { requests: number; writes: number; request_limit: number; write_limit: number; wait_seconds: number };
 type SourceMod = { id: number; name: string; summary: string; author: string; logo: string | null; filesize: number };
 type Tab = "overview" | "publish" | "cook" | "files" | "page" | "media" | "comments" | "team" | "advanced" | "size";
 type AssetStatus = "required" | "used" | "in_string" | "other_mods" | "unused" | "unknown";
@@ -88,7 +93,8 @@ type Progress =
   | { kind: "output"; lines: { tool: string; text: string; level: LogLine["level"] }[] }
   | { kind: "stage"; stage: string; target: string | null }
   | { kind: "parts"; target: string; done: number; total: number }
-  | { kind: "finished"; ok: boolean; message: string; failure: Failure | null };
+  | { kind: "finished"; ok: boolean; message: string; failure: Failure | null }
+  | { kind: "waiting"; seconds: number };
 type Run = {
   modId: number;
   modName: string;
@@ -199,10 +205,15 @@ const STAGE_FAILURES: Record<string, string> = {
   package: "Packaging failed", upload: "Upload failed", "go-live": "Going live failed",
 };
 const FILES_SHOWN = 50;
-const PREFETCH_AT_ONCE = 3;
+/** Refresh is a click away, so it needs a rest or a few clicks could use up mod.io's limit. */
+const REFRESH_SECONDS = 10;
+/** Shorter waits come and go too fast to be worth a notice. */
+const WAIT_SHOWN_FROM = 3;
+const USAGE_SECONDS = 2;
+const SEARCH_DELAY = 500;
 const SAVED_LIBRARY = "library-v1";
 const ACCESS_HINT_SETTING = "access-hint-hidden";
-const TOKEN_PAGE = "https://mod.io/me/access";
+const TOKEN_PAGE = "https://mod.io/me/access#tokens";
 const RELEASES_PAGE = "https://github.com/PavlovVR/pavlov-mod-studio/releases/latest";
 const MANUAL_UPDATES_SETTING = "manual-updates";
 const NOTE_SECONDS = 6;
@@ -244,12 +255,13 @@ type ModData = {
   files: Slot<ModFile[]>; team: Slot<TeamMember[]>; comments: Slot<Comment[]>;
   deps: Slot<ModInfo[]>; metadata: Slot<MetadataPair[]>; events: Slot<ModEvent[]>;
   reports: Record<string, Slot<PakReport>>;
+  /** Files and comments arrive a page at a time, because a mod can have thousands. */
+  filesTotal: number; filesNext: number | null; commentsNext: number | null;
 };
 const COMMANDS = {
-  files: "mod_files", team: "mod_team", comments: "mod_comments",
-  deps: "mod_dependencies", metadata: "mod_metadata", events: "mod_events",
+  team: "mod_team", deps: "mod_dependencies", metadata: "mod_metadata", events: "mod_events",
 } as const;
-type SlotKey = keyof typeof COMMANDS;
+type SlotKey = "files" | "comments" | keyof typeof COMMANDS;
 const TAB_DATA: Partial<Record<Tab, SlotKey[]>> = {
   overview: ["files", "events"], publish: ["files"], files: ["files"],
   comments: ["comments"], team: ["team"], advanced: ["deps", "metadata"],
@@ -324,6 +336,9 @@ const state = {
   view: "mod" as "mod" | "settings" | "create" | "source",
   tab: "publish" as Tab,
   refreshing: false,
+  cooling: { all: false, mod: false },
+  waitUntil: 0,
+  usage: null as Usage | null,
   acting: false,
   checking: false,
   accessHintHidden: readFlag(ACCESS_HINT_SETTING),
@@ -359,14 +374,15 @@ const state = {
 
 const app = document.querySelector<HTMLElement>("#app")!;
 app.className = "grid h-screen grid-cols-[248px_minmax(0,1fr)]";
+app.spellcheck = false;
 app.innerHTML = `
   <aside id="rail" class="flex min-h-0 flex-col border-r border-line bg-panel"></aside>
   <div class="flex min-h-0 min-w-0 flex-col">
     <main id="main" class="min-h-0 flex-1 overflow-y-auto"></main>
-    <section id="run" aria-label="Current run"></section>
+    <section id="run" class="max-h-[62vh] shrink-0 overflow-y-auto" aria-label="Current run"></section>
   </div>
   <div id="announce" class="sr-only" role="status" aria-live="polite"></div>
-  <dialog id="modal" class="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-lg border border-line bg-canvas p-0 text-ink backdrop:bg-black/50"></dialog>`;
+  <dialog id="modal" aria-labelledby="modal-title" class="m-auto w-[min(32rem,calc(100vw-2rem))] rounded-lg border border-line bg-canvas p-0 text-ink backdrop:bg-black/50"></dialog>`;
 const rail = app.querySelector<HTMLElement>("#rail")!;
 const main = app.querySelector<HTMLElement>("#main")!;
 const runPanel = app.querySelector<HTMLElement>("#run")!;
@@ -455,7 +471,7 @@ function toastHtml(): string {
     <div id="toast" class="notice toast ${note.ok ? "notice-ok" : "notice-failed"}" role="${note.ok ? "status" : "alert"}">
       ${icon(note.ok ? "check" : "alert")}
       <span class="flex-1 select-text">${escape(note.text)}</span>
-      <button class="-my-1 -mr-1 cursor-pointer rounded p-1 hover:bg-raised" data-action="dismiss-note" aria-label="Dismiss" title="Dismiss">${icon("close", 14)}</button>
+      <button class="-my-1 -mr-1 cursor-pointer rounded p-1.5 hover:bg-raised" data-action="dismiss-note" aria-label="Dismiss" title="Dismiss">${icon("close", 14)}</button>
     </div>`;
 }
 
@@ -470,7 +486,7 @@ function noListingHtml(): string {
 function dataFor(id: number): ModData {
   let data = cache.get(id);
   if (!data) {
-    data = { files: {}, team: {}, comments: {}, deps: {}, metadata: {}, events: {}, reports: {} };
+    data = { files: {}, team: {}, comments: {}, deps: {}, metadata: {}, events: {}, reports: {}, filesTotal: 0, filesNext: null, commentsNext: null };
     cache.set(id, data);
   }
   return data;
@@ -535,10 +551,17 @@ function railHtml(): string {
         ${state.showOthers ? "Hide" : "Show"} ${others.length} ${others.length === 1 ? "mod" : "mods"} you can't manage
       </button>`
     : "";
-  const status = state.libraryError
+  const wait = waiting()
+    ? `<div class="notice mx-2 mb-2" role="status">
+        <span class="spinner size-3.5 mt-0.5"></span>
+        <span>Waiting on mod.io's request limit. Carrying on in <span id="wait-seconds" class="tabular-nums">${secondsLeft()}</span>s.</span>
+      </div>`
+    : "";
+  const status = waiting() ? ""
+    : state.libraryError
     ? `<div class="notice notice-failed mx-2 mb-2 flex-col">
         <span>${Object.keys(state.infos).length ? "Showing saved data. " : ""}${escape(state.libraryError)}</span>
-        <button class="btn btn-secondary btn-sm" data-action="refresh-all">Try again</button>
+        <button class="btn btn-secondary btn-sm" data-action="refresh-all" ${state.cooling.all ? "disabled" : ""}>Try again</button>
       </div>`
     : state.hasToken && !state.loading && !known && !state.accessHintHidden
       ? `<div class="notice mx-2 mb-2 flex-col">
@@ -550,10 +573,13 @@ function railHtml(): string {
         </div>`
       : "";
   return `
-    <div class="flex h-14 shrink-0 items-center justify-between pr-2 pl-4">
-      <span class="text-[15px] font-semibold tracking-tight">Pavlov Mod Studio</span>
+    <div class="flex h-14 shrink-0 items-center justify-between gap-1 pr-1.5 pl-3">
+      <span class="flex min-w-0 items-center gap-2">
+        <img src="${logo}" alt="" class="size-5 shrink-0 rounded" />
+        <span class="truncate text-sm font-semibold tracking-tight">Pavlov Mod Studio</span>
+      </span>
       <span class="flex">
-        <button class="btn btn-ghost btn-sm btn-icon" data-action="refresh-all" aria-label="Refresh all mods" title="Refresh all mods" ${state.loading || !state.hasToken ? "disabled" : ""}>
+        <button class="btn btn-ghost btn-sm btn-icon" data-action="refresh-all" aria-label="Refresh all mods" title="Refresh all mods" ${state.loading || !state.hasToken || state.cooling.all || waiting() ? "disabled" : ""}>
           ${state.loading ? `<span class="spinner"></span>` : icon("refresh")}
         </button>
         <button class="btn btn-ghost btn-sm btn-icon" data-action="new-mod" aria-label="New mod" title="New mod">${icon("plus")}</button>
@@ -561,7 +587,7 @@ function railHtml(): string {
     </div>
     ${all.length > 6 ? `
       <div class="px-2 pb-1">
-        <input id="mod-filter" class="input h-8" value="${escape(state.filter)}" placeholder="Filter mods" aria-label="Filter mods" />
+        <input id="mod-filter" class="input h-8" autocomplete="off" value="${escape(state.filter)}" placeholder="Filter mods" aria-label="Filter mods" />
       </div>` : ""}
     <nav id="mod-list" class="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2" aria-label="Mods">
       ${group("", inKit)}
@@ -571,10 +597,10 @@ function railHtml(): string {
       ${empty}
       ${toggle}
     </nav>
-    ${status}
+    ${wait}${status}
     <div class="space-y-0.5 border-t border-line p-2">
       <button class="nav-row" data-action="source" ${state.view === "source" ? 'aria-current="page"' : ""}>${icon("library")}Browse source plugins</button>
-      <button class="nav-row" data-action="settings" ${state.view === "settings" ? 'aria-current="page"' : ""}>${icon("settings")}Settings${state.update.status === "available" ? `<span class="badge ml-auto">Update</span>` : ""}</button>
+      <button class="nav-row" data-action="settings" ${state.view === "settings" ? 'aria-current="page"' : ""}>${icon("settings")}Settings${state.update.status === "available" ? `<span class="badge ml-auto">Update</span>` : state.update.status === "installing" ? `<span class="badge badge-plain ml-auto">Updating</span>` : ""}</button>
     </div>`;
 }
 
@@ -659,16 +685,22 @@ function overviewHtml(entry: Entry): string {
 
 /* Files */
 
+function matchingFiles(files: ModFile[]): ModFile[] {
+  return files.filter((f) => state.fileFilter === "all" || f.platforms.includes(state.fileFilter));
+}
+
 function filesHtml(entry: Entry): string {
-  const slot = dataFor(entry.id).files;
+  const data = dataFor(entry.id);
+  const slot = data.files;
   if (slot.error) return failedHtml(slot.error);
   if (!slot.value) return loadingHtml();
   if (!slot.value.length) return `<p class="text-ink-muted">No files yet. Publish this mod to add one.</p>`;
   const manage = canManage(entry.id);
   const live = new Set(entry.info?.platforms.map((p) => p.file_id));
   const builds = [...new Set(slot.value.flatMap((f) => f.platforms))];
-  const shown = slot.value.filter((f) => state.fileFilter === "all" || f.platforms.includes(state.fileFilter));
+  const shown = matchingFiles(slot.value);
   const page = shown.slice(0, state.filesShown);
+  const total = state.fileFilter === "all" ? Math.max(data.filesTotal, shown.length) : shown.length;
   const pickable = page.filter((f) => !live.has(f.id));
   const allPicked = pickable.length > 0 && pickable.every((f) => state.pickedFiles.has(f.id));
   const somePicked = pickable.some((f) => state.pickedFiles.has(f.id));
@@ -710,7 +742,7 @@ function filesHtml(entry: Entry): string {
         ${builds.map((b) => `<option value="${escape(b)}" ${state.fileFilter === b ? "selected" : ""}>${escape(platformName(b))}</option>`).join("")}
       </select>
       <span class="flex items-center gap-3">
-        <span class="hint tabular-nums">${count(shown.length)} ${shown.length === 1 ? "file" : "files"}</span>
+        <span class="hint tabular-nums">${count(total)} ${total === 1 ? "file" : "files"}</span>
         ${picked ? `<button class="btn btn-secondary btn-sm" data-action="delete-picked" ${locked()}>Delete ${picked} selected</button>` : ""}
       </span>
     </div>
@@ -720,7 +752,7 @@ function filesHtml(entry: Entry): string {
         <tbody>${rows || `<tr><td colspan="6" class="text-ink-muted">No files for this build.</td></tr>`}</tbody>
       </table>
     </div>
-    ${shown.length > page.length ? `<button class="btn btn-secondary btn-sm mt-3" data-action="more-files">Show more</button>` : ""}
+    ${shown.length > page.length || data.filesNext !== null ? `<button class="btn btn-secondary btn-sm mt-3" data-action="more-files" ${slot.busy ? "disabled" : ""}>${slot.busy ? "Loading" : "Show more"}</button>` : ""}
     ${manage ? `<p class="hint mt-3">Make an older file live to roll back that build. mod.io can't delete a live file.</p>` : ""}`;
 }
 
@@ -784,7 +816,7 @@ function logoField(label: string, path: string, action: string, placeholder: str
     <div class="field">
       <span class="label">${label}</span>
       <div class="flex gap-2">
-        <input class="input" value="${escape(path)}" readonly aria-label="${label} file" placeholder="${placeholder}" />
+        <input class="input" autocomplete="off" value="${escape(path)}" readonly aria-label="${label} file" placeholder="${placeholder}" />
         <button class="btn btn-secondary" data-action="${action}">Choose image</button>
       </div>
     </div>`;
@@ -800,17 +832,17 @@ function pageHtml(entry: Entry): string {
       <section class="card space-y-4 p-5">
         <h2 class="font-semibold">Listing</h2>
         <label class="field"><span class="label">Name</span>
-          <input id="page-name" class="input" maxlength="80" value="${escape(draft.name)}" /></label>
+          <input id="page-name" class="input" autocomplete="off" maxlength="80" value="${escape(draft.name)}" /></label>
         <label class="field"><span class="label">Web address name</span>
-          <input id="page-name-id" class="input" maxlength="80" value="${escape(draft.name_id)}" />
+          <input id="page-name-id" class="input" autocomplete="off" maxlength="80" value="${escape(draft.name_id)}" />
           <span class="hint mt-1 block">Changing this changes the mod's link on mod.io.</span></label>
         <label class="field"><span class="label">Summary</span>
-          <textarea id="page-summary" class="input" rows="3" maxlength="250">${escape(draft.summary)}</textarea></label>
+          <textarea id="page-summary" class="input" spellcheck="true" rows="3" maxlength="250">${escape(draft.summary)}</textarea></label>
         <label class="field"><span class="label">Description</span>
-          <textarea id="page-description" class="input" rows="10">${escape(draft.description)}</textarea>
+          <textarea id="page-description" class="input" spellcheck="true" rows="10">${escape(draft.description)}</textarea>
           <span class="hint mt-1 block">HTML is allowed.</span></label>
         <label class="field"><span class="label">Homepage</span>
-          <input id="page-homepage" class="input" type="url" value="${escape(draft.homepage_url)}" placeholder="https://" /></label>
+          <input id="page-homepage" class="input" autocomplete="off" type="url" value="${escape(draft.homepage_url)}" placeholder="https://" /></label>
         ${logoField("New logo", draft.logo, "pick-page-logo", "Keep the current logo")}
         <div class="field"><span class="label">Type</span>
           <p class="text-ink-muted">${escape(kindName(entry.kind))}. Create a new mod to use another type, because the type is built into its files.</p></div>
@@ -874,7 +906,7 @@ function mediaHtml(entry: Entry): string {
             </li>`).join("")}
         </ul>` : ""}
       <div class="flex gap-2">
-        <input id="link-draft" class="input" value="${escape(state.linkDraft)}" placeholder="YouTube or Sketchfab link" aria-label="YouTube or Sketchfab link" />
+        <input id="link-draft" class="input" autocomplete="off" value="${escape(state.linkDraft)}" placeholder="YouTube or Sketchfab link" aria-label="YouTube or Sketchfab link" />
         <button class="btn btn-secondary" data-action="add-link" ${state.linkDraft.trim() && !state.acting ? "" : "disabled"}>Add link</button>
       </div>
     </section>`;
@@ -901,13 +933,13 @@ function commentHtml(entry: Entry, comment: Comment, replies: Comment[]): string
         </div>
         <p class="mt-1 whitespace-pre-wrap break-words select-text">${richText(comment.content)}</p>
         <div class="mt-1 flex gap-1">
-          ${open ? `<button class="btn btn-ghost btn-sm" data-reply="${comment.id}">Reply</button>` : ""}
+          ${open && state.hasToken ? `<button class="btn btn-ghost btn-sm" data-reply="${comment.id}">Reply</button>` : ""}
           ${mine ? `<button class="btn btn-ghost btn-sm" data-edit-comment="${comment.id}" ${locked()}>Edit</button>` : ""}
           ${mine || manage ? `<button class="btn btn-ghost btn-sm" data-delete-comment="${comment.id}" ${locked()}>Delete</button>` : ""}
         </div>
         ${replying ? `
           <div class="mt-2 space-y-2">
-            <textarea id="reply-draft" class="input" rows="2" aria-label="Your reply">${escape(state.replyDraft)}</textarea>
+            <textarea id="reply-draft" class="input" spellcheck="true" rows="2" aria-label="Your reply">${escape(state.replyDraft)}</textarea>
             <div class="flex gap-2">
               <button class="btn btn-primary btn-sm" data-action="post-reply" ${state.replyDraft.trim() && !state.acting ? "" : "disabled"}>Post reply</button>
               <button class="btn btn-ghost btn-sm" data-action="cancel-reply">Cancel</button>
@@ -919,16 +951,17 @@ function commentHtml(entry: Entry, comment: Comment, replies: Comment[]): string
 }
 
 function commentsHtml(entry: Entry): string {
-  const slot = dataFor(entry.id).comments;
+  const data = dataFor(entry.id);
+  const slot = data.comments;
   const enabled = !entry.info || entry.info.community_options & 1;
   const off = enabled ? "" : `
     <div class="notice mb-4 items-center justify-between">
       <span>Comments are turned off for this mod.</span>
       ${canManage(entry.id) ? `<button class="btn btn-secondary btn-sm" data-tab="page">Open Page</button>` : ""}
     </div>`;
-  const composer = enabled ? `
+  const composer = enabled && state.hasToken ? `
     <div class="mb-5 space-y-2">
-      <textarea id="comment-draft" class="input" rows="3" placeholder="Write a comment" aria-label="Write a comment">${escape(state.commentDraft)}</textarea>
+      <textarea id="comment-draft" class="input" spellcheck="true" rows="3" placeholder="Write a comment" aria-label="Write a comment">${escape(state.commentDraft)}</textarea>
       <button class="btn btn-primary btn-sm" data-action="post-comment" ${state.commentDraft.trim() && !state.acting ? "" : "disabled"}>Post comment</button>
     </div>` : "";
   const wrap = (body: string) => `<div class="max-w-3xl">${off}${composer}${body}</div>`;
@@ -943,8 +976,10 @@ function commentsHtml(entry: Entry): string {
   };
   const threads = all.filter((c) => rootOf(c) === c.id);
   const repliesTo = (id: number) => all.filter((c) => c.id !== id && rootOf(c) === id).sort((a, b) => a.id - b.id);
+  const older = data.commentsNext === null ? ""
+    : `<button class="btn btn-secondary btn-sm mt-3" data-action="more-comments" ${slot.busy ? "disabled" : ""}>${slot.busy ? "Loading" : "Show older comments"}</button>`;
   return wrap(threads.length
-    ? `<ul class="divide-y divide-line">${threads.map((c) => commentHtml(entry, c, repliesTo(c.id))).join("")}</ul>`
+    ? `<ul class="divide-y divide-line">${threads.map((c) => commentHtml(entry, c, repliesTo(c.id))).join("")}</ul>${older}`
     : `<p class="text-ink-muted">No comments yet.</p>`);
 }
 
@@ -1005,7 +1040,7 @@ function advancedHtml(entry: Entry): string {
         <p class="hint mb-3">Mods that players need alongside this one.</p>
         ${deps}
         <div class="flex gap-2">
-          <input id="dependency-draft" class="input" inputmode="numeric" value="${escape(state.dependencyDraft)}" placeholder="Mod ID" aria-label="Mod ID" />
+          <input id="dependency-draft" class="input" autocomplete="off" inputmode="numeric" value="${escape(state.dependencyDraft)}" placeholder="Mod ID" aria-label="Mod ID" />
           <button class="btn btn-secondary" data-action="add-dependency" ${state.dependencyDraft.trim() && !state.acting ? "" : "disabled"}>Add</button>
         </div>
       </section>
@@ -1014,8 +1049,8 @@ function advancedHtml(entry: Entry): string {
         <p class="hint mb-3">Key and value pairs stored on the mod.</p>
         ${metadata}
         <div class="flex gap-2">
-          <input id="metadata-key" class="input" maxlength="255" value="${escape(state.metadataDraft.key)}" placeholder="Key" aria-label="Metadata key" />
-          <input id="metadata-value" class="input" maxlength="255" value="${escape(state.metadataDraft.value)}" placeholder="Value" aria-label="Metadata value" />
+          <input id="metadata-key" class="input" autocomplete="off" maxlength="255" value="${escape(state.metadataDraft.key)}" placeholder="Key" aria-label="Metadata key" />
+          <input id="metadata-value" class="input" autocomplete="off" maxlength="255" value="${escape(state.metadataDraft.value)}" placeholder="Value" aria-label="Metadata value" />
           <button class="btn btn-secondary" data-action="add-metadata" ${state.metadataDraft.key.trim() && state.metadataDraft.value && !state.acting ? "" : "disabled"}>Add</button>
         </div>
       </section>
@@ -1061,7 +1096,7 @@ function sizeHtml(entry: Entry): string {
 
 function sourceHtml(): string {
   const { search, sort, mods, offset, total, busy, note } = state.source;
-  const sorts = [["-date_live", "Newest"], ["downloads", "Most downloads"], ["-popular", "Most popular"], ["name", "Name"]];
+  const sorts = [["-date_live", "Newest"], ["-downloads_total", "Most downloads"], ["-subscribers_total", "Most subscribers"], ["-ratings_weighted_aggregate", "Top rated"], ["name", "Name"]];
   const card = (m: SourceMod) => `
     <li class="card flex flex-col overflow-hidden">
       ${m.logo ? `<img src="${escape(m.logo)}" alt="" class="aspect-video w-full bg-raised object-cover" />` : `<div class="aspect-video w-full bg-raised"></div>`}
@@ -1078,7 +1113,7 @@ function sourceHtml(): string {
       <div class="mb-4 flex gap-2">
         <div class="relative min-w-0 flex-1">
           <span class="pointer-events-none absolute top-2.5 left-3 text-ink-subtle">${icon("search")}</span>
-          <input id="source-search" class="input pl-9" value="${escape(search)}" placeholder="Search source plugins" aria-label="Search source plugins" />
+          <input id="source-search" class="input pl-9" autocomplete="off" value="${escape(search)}" placeholder="Search source plugins" aria-label="Search source plugins" />
         </div>
         <select id="source-sort" class="input w-44 shrink-0" aria-label="Sort by">
           ${sorts.map(([id, label]) => `<option value="${id}" ${sort === id ? "selected" : ""}>${label}</option>`).join("")}
@@ -1167,15 +1202,19 @@ function stepsHtml(run: Run): string {
   const steps = STAGES.filter((s) => s.id !== "go-live" || (run.together && !run.inactive));
   const current = steps.findIndex((s) => s.id === run.stage);
   const items = steps.map((s, index) => {
-    const failed = index === current && run.result && !run.result.ok;
+    const ended = index === current && run.result && !run.result.ok;
+    const stopped = ended && wasStopped(run);
+    const failed = ended && !stopped;
     const done = run.result?.ok || index < current;
     const active = index === current && !run.result;
-    const marker = failed
+    const marker = stopped
+      ? `<span class="text-ink-subtle">${icon("alert", 14)}</span>`
+      : failed
       ? `<span class="text-danger">${icon("close", 14)}</span>`
       : done ? `<span class="text-ok">${icon("check", 14)}</span>`
       : active ? `<span class="spinner size-3.5"></span>`
       : `<span class="mx-[3px] size-2 rounded-full bg-line-strong"></span>`;
-    const tone = active ? "font-medium text-ink" : done ? "text-ink-muted" : failed ? "font-medium text-danger" : "text-ink-subtle";
+    const tone = active || stopped ? "font-medium text-ink" : done ? "text-ink-muted" : failed ? "font-medium text-danger" : "text-ink-subtle";
     return `<li class="flex items-center gap-1.5 text-[13px] ${tone}" ${active ? 'aria-current="step"' : ""}>${marker}${s.label}</li>`;
   });
   return `<ol class="flex flex-wrap items-center gap-x-5 gap-y-1">${items.join("")}</ol>`;
@@ -1285,7 +1324,7 @@ function modHtml(entry: Entry): string {
           <h1 class="truncate text-xl font-semibold tracking-tight" title="${escape(entry.name)}">${escape(entry.name)}</h1>
           <p class="mt-0.5 flex items-center gap-2 whitespace-nowrap text-ink-subtle tabular-nums">${escape(kindName(entry.kind))} ${entry.id}${info && !info.visible ? `<span class="badge badge-plain">Hidden</span>` : ""}</p>
         </div>
-        <button class="btn btn-secondary btn-sm" data-action="refresh-mod" aria-label="Refresh" title="Refresh this mod" ${state.refreshing || !state.hasToken ? "disabled" : ""}>
+        <button class="btn btn-secondary btn-sm" data-action="refresh-mod" aria-label="Refresh" title="Refresh this mod" ${state.refreshing || !state.hasToken || state.cooling.mod || waiting() ? "disabled" : ""}>
           ${state.refreshing ? `<span class="spinner size-3.5"></span>` : icon("refresh", 14)}<span class="max-lg:hidden">Refresh</span>
         </button>
         ${info?.profile_url ? `<button class="btn btn-secondary btn-sm" data-action="open-profile" aria-label="View on mod.io" title="View on mod.io"><span class="max-lg:hidden">View on mod.io</span>${icon("external", 14)}</button>` : ""}
@@ -1500,14 +1539,16 @@ function cookHtml(entry: Entry): string {
         ${cook.analysing ? `<span class="spinner size-3.5"></span>Reading references` : `${icon("filter", 14)}Filter only used`}
       </button>
       <button class="btn btn-secondary btn-sm" data-action="keep-all" ${cook.excluded.size ? "" : "disabled"}>Keep everything</button>
+      <span class="flex">
       <button class="btn btn-ghost btn-sm btn-icon" data-action="recheck" aria-label="Check references again" title="Check references again" ${cook.analysing || !cook.report.analysed ? "disabled" : ""}>${icon("refresh")}</button>
       <button class="btn btn-ghost btn-sm btn-icon" data-action="cook-undo" aria-label="Undo" title="Undo (Ctrl+Z)" ${cook.undo.length ? "" : "disabled"}>${icon("undo")}</button>
       <button class="btn btn-ghost btn-sm btn-icon" data-action="cook-redo" aria-label="Redo" title="Redo (Ctrl+Y)" ${cook.redo.length ? "" : "disabled"}><span class="inline-block -scale-x-100">${icon("undo")}</span></button>
       <button class="btn btn-ghost btn-sm btn-icon" data-action="expand-all" aria-label="Expand all" title="Expand all">${icon("expand")}</button>
       <button class="btn btn-ghost btn-sm btn-icon" data-action="collapse-all" aria-label="Collapse all" title="Collapse all">${icon("collapse")}</button>
+      </span>
       <span class="flex-1"></span>
-      <input id="asset-search" class="input h-8 w-36" value="${escape(cook.query)}" placeholder="Search assets" aria-label="Search assets" />
-      <select id="asset-view" class="input h-8 w-36" aria-label="Show">
+      <input id="asset-search" class="input h-8 w-28 lg:w-36" autocomplete="off" value="${escape(cook.query)}" placeholder="Search assets" aria-label="Search assets" />
+      <select id="asset-view" class="input h-8 w-28 lg:w-36" aria-label="Show">
         ${views.map(([id, label]) => `<option value="${id}" ${cook.view === id ? "selected" : ""}>${label}</option>`).join("")}
       </select>
     </div>
@@ -1823,7 +1864,6 @@ async function reloadCook(id: number): Promise<void> {
     cook.note = { ok: false, text: String(error) };
   }
   if (state.selectedId === id) render();
-  void loadBuilt(id);
 }
 
 async function loadBuilt(id: number): Promise<void> {
@@ -1911,8 +1951,10 @@ function publishHtml(entry: Entry): string {
   const group = (id: Group, label: string) =>
     `<button data-group="${id}" aria-pressed="${state.group === id}">${label}</button>`;
   const running = isRunning();
-  const blocked = running || state.checking || !state.hasToken;
-  const label = state.checking ? "Checking references"
+  const updating = state.update.status === "installing";
+  const blocked = running || state.checking || !state.hasToken || updating;
+  const label = updating ? "Updating the app"
+    : state.checking ? "Checking references"
     : running && state.run?.action === "publish" ? "Publishing"
     : state.pending ? `Resume version ${state.pending}` : "Publish";
   return `
@@ -1937,7 +1979,7 @@ function publishHtml(entry: Entry): string {
           <p class="hint mt-1.5">${GROUP_HINTS[state.group]}</p>
         </div>
         <label class="field"><span class="label">Change note</span>
-          <input id="changelog" class="input" value="${escape(state.changelog)}" placeholder="What changed in this version" /></label>
+          <input id="changelog" class="input" autocomplete="off" spellcheck="true" value="${escape(state.changelog)}" placeholder="What changed in this version" /></label>
         <div class="space-y-3">
           ${optionHtml("inactive", "Keep hidden after upload", "Make the files live later from the Files tab.", state.inactive)}
           ${optionHtml("together", "Go live on all platforms together", "Waits until every build has uploaded.", state.together && !state.inactive, state.inactive)}
@@ -1945,12 +1987,12 @@ function publishHtml(entry: Entry): string {
           ${entry.kind === "Mod" ? optionHtml("share-source", "Share source with other modders", "Lets others build this mod into theirs.", state.shareSource) : ""}
           ${optionHtml("verbose", "Show verbose log", "Opens the log with all output from Unreal, such as UnrealPak.", state.verbose)}
         </div>
-        <div class="flex gap-2 border-t border-line pt-5">
+        <div class="sticky bottom-0 z-10 -mx-1 flex flex-wrap gap-2 border-t border-line bg-canvas px-1 py-3">
           <button class="btn btn-primary" data-action="publish" ${blocked ? "disabled" : ""}>${label}</button>
-          <button class="btn btn-secondary" data-action="stage" ${running || state.checking ? "disabled" : ""}>Stage for local testing</button>
+          <button class="btn btn-secondary" data-action="stage" ${running || state.checking || updating ? "disabled" : ""}>Stage for local testing</button>
         </div>
       </div>
-      <div class="min-w-0">${liveHtml(entry)}</div>
+      <div class="min-w-0">${state.hasToken ? liveHtml(entry) : ""}</div>
     </div>`;
 }
 
@@ -1961,17 +2003,35 @@ function tokenHtml(): string {
   return `
         <div class="space-y-4 border-t border-line pt-4">
           <ol class="list-decimal space-y-1.5 pl-5 text-ink-muted">
-            <li>Open the access page on mod.io and log in.</li>
-            <li>Under OAuth access, create a token. Name it anything, and give it read and write access.</li>
-            <li>Copy the token and paste it here.</li>
+            <li>Open the Personal access tokens tab on mod.io and log in. Agree to the API Access Terms if it asks.</li>
+            <li>Select Generate token and give it any name.</li>
+            <li>Under Permissions, tick All my mods and User actions.</li>
+            <li>Under Scope, tick Read and Write, then set Expiry to 1 Year.</li>
+            <li>Select Generate and copy the token. mod.io only shows it once.</li>
+            <li>Paste it here and select Connect.</li>
           </ol>
           <button class="btn btn-secondary" data-action="token-page">Open mod.io</button>
           <label class="field"><span class="label">Personal token</span>
             <div class="flex gap-2">
-              <input id="token" class="input" type="password" autocomplete="off" value="${escape(state.tokenDraft)}" placeholder="Paste your token" />
+              <input id="token" class="input" autocomplete="off" type="password" autocomplete="off" value="${escape(state.tokenDraft)}" placeholder="Paste your token" />
               <button class="btn btn-primary" data-action="save-token" ${ready ? "" : "disabled"}>${state.tokenBusy ? "Checking" : "Connect"}</button>
             </div></label>
-          <p class="hint">Tokens last a year, and the app tells you when yours runs out. It's encrypted for your Windows account and never leaves your PC, except to reach mod.io. By connecting you agree to the <button class="cursor-pointer text-ink underline" data-action="terms">mod.io terms</button>.</p>
+          <p class="hint">You choose how long a token lasts, and the app tells you when yours runs out. It's encrypted for your Windows account and never leaves your PC, except to reach mod.io. By connecting you agree to the <button class="cursor-pointer text-ink underline" data-action="terms">mod.io terms</button>.</p>
+        </div>`;
+}
+
+function usageHtml(): string {
+  const usage = state.usage;
+  if (!usage) return "";
+  const share = Math.min((usage.requests / usage.request_limit) * 100, 100);
+  return `
+        <div class="border-t border-line pt-4">
+          <div class="mb-1.5 flex items-baseline justify-between gap-3 text-[13px]">
+            <span class="font-medium">mod.io requests this minute</span>
+            <span id="usage-count" class="text-ink-muted tabular-nums">${count(usage.requests)} of ${count(usage.request_limit)}</span>
+          </div>
+          <span id="usage-meter" class="meter meter-plain" role="progressbar" aria-label="mod.io requests this minute" aria-valuemin="0" aria-valuemax="${usage.request_limit}" aria-valuenow="${usage.requests}"><i style="width:${share}%"></i></span>
+          <p class="hint mt-1.5">The app slows itself down before it reaches mod.io's limit.</p>
         </div>`;
 }
 
@@ -1980,10 +2040,10 @@ function usernameHtml(username: string): string {
         <div class="border-t border-line pt-4">
           <label class="field"><span class="label">mod.io username</span>
             <div class="flex gap-2">
-              <input id="username" class="input" value="${escape(username)}" />
+              <input id="username" class="input" autocomplete="off" value="${escape(username)}" />
               <button class="btn btn-secondary" data-action="save-username">Save</button>
             </div>
-            <span class="hint mt-1 block">A token can't show who it belongs to, so this is how the app hides mods you can't manage.</span></label>
+            <span class="hint mt-1 block">The app uses this to hide mods you can't manage.</span></label>
         </div>`;
 }
 
@@ -2031,7 +2091,7 @@ function settingsHtml(): string {
   const folder = (id: string, label: string, value: string, action: string) => `
     <label class="field"><span class="label">${label}</span>
       <div class="flex gap-2">
-        <input id="${id}" class="input" value="${escape(value)}" />
+        <input id="${id}" class="input" autocomplete="off" value="${escape(value)}" />
         ${action ? `<button class="btn btn-secondary" data-action="${action}">Browse</button>` : ""}
       </div></label>`;
   const account = state.hasToken
@@ -2039,11 +2099,11 @@ function settingsHtml(): string {
     : "Connect your account to publish and manage your mods.";
   return `
     <div class="mx-auto max-w-2xl px-8 py-7">
-      ${pageHeader("Settings", "")}
+      ${pageHeader("Settings", state.settings.project ? "" : "Choose your modkit folder to get started.")}
       <section class="card mb-5 space-y-4 p-5">
         <h2 class="font-semibold">Folders</h2>
         ${folder("project", "Modkit folder", project, "browse")}
-        ${folder("engine", "Unreal Engine folder", engine, "")}
+        ${folder("engine", "Unreal Engine folder", engine, "browse-engine")}
         ${folder("stage", "Staging folder, for local testing", stage, "browse-stage")}
         <button class="btn btn-primary" data-action="save-settings">Save settings</button>
         ${noteHtml(state.settingsNote)}
@@ -2056,7 +2116,7 @@ function settingsHtml(): string {
           </div>
           ${state.hasToken ? `<button class="btn btn-secondary btn-sm" data-action="remove-token">Disconnect</button>` : ""}
         </div>
-        ${state.hasToken ? usernameHtml(username) : tokenHtml()}
+        ${state.hasToken ? (state.access.user && !state.settings.username ? "" : usernameHtml(username)) + usageHtml() : tokenHtml()}
         ${noteHtml(state.accountNote)}
       </section>
       ${updatesHtml()}
@@ -2089,9 +2149,9 @@ function createHtml(): string {
           ${type("GameMode", "Game mode", "Custom game logic")}
         </div>
         <label class="field"><span class="label">Name, 3 to 32 characters</span>
-          <input id="draft-name" class="input" maxlength="32" value="${escape(name)}" /></label>
+          <input id="draft-name" class="input" autocomplete="off" maxlength="32" value="${escape(name)}" /></label>
         <label class="field"><span class="label">Summary</span>
-          <textarea id="draft-summary" class="input" rows="3" maxlength="250">${escape(summary)}</textarea></label>
+          <textarea id="draft-summary" class="input" spellcheck="true" rows="3" maxlength="250">${escape(summary)}</textarea></label>
         ${logoField("Logo", logo, "pick-logo", "No image chosen")}
         <p class="hint">By creating a mod you agree to the <button class="cursor-pointer text-ink underline" data-action="terms">mod.io terms</button>.</p>
         <button class="btn btn-primary" data-action="create-mod" ${createReady() ? "" : "disabled"}>
@@ -2129,12 +2189,12 @@ function modalHtml(current: Modal): string {
   if (current.kind === "edit-file") {
     return `
       <div class="space-y-4 p-5">
-        <h2 class="text-base font-semibold">Edit file</h2>
+        <h2 id="modal-title" class="text-base font-semibold">Edit file</h2>
         <label class="field"><span class="label">Version</span>
-          <input id="modal-version" class="input" value="${escape(current.version)}" />
+          <input id="modal-version" class="input" autocomplete="off" value="${escape(current.version)}" />
           <span class="hint mt-1 block">This only changes the label. The build stays the same.</span></label>
         <label class="field"><span class="label">Changelog</span>
-          <textarea id="modal-changelog" class="input" rows="4">${escape(current.changelog)}</textarea></label>
+          <textarea id="modal-changelog" class="input" spellcheck="true" rows="4">${escape(current.changelog)}</textarea></label>
         ${error}
         ${actions("Save", "save-file", Boolean(current.version.trim()))}
       </div>`;
@@ -2142,8 +2202,8 @@ function modalHtml(current: Modal): string {
   if (current.kind === "edit-comment") {
     return `
       <div class="space-y-4 p-5">
-        <h2 class="text-base font-semibold">Edit comment</h2>
-        <textarea id="modal-comment" class="input" rows="5" aria-label="Comment">${escape(current.content)}</textarea>
+        <h2 id="modal-title" class="text-base font-semibold">Edit comment</h2>
+        <textarea id="modal-comment" class="input" spellcheck="true" rows="5" aria-label="Comment">${escape(current.content)}</textarea>
         ${error}
         ${actions("Save", "save-comment", Boolean(current.content.trim()))}
       </div>`;
@@ -2151,7 +2211,7 @@ function modalHtml(current: Modal): string {
   const name = selectedEntry()?.name ?? "";
   return `
     <div class="space-y-4 p-5">
-      <h2 class="text-base font-semibold">Close ${escape(name)}?</h2>
+      <h2 id="modal-title" class="text-base font-semibold">Close ${escape(name)}?</h2>
       <p class="text-ink-muted">Players will lose access to this mod. Only the mod.io website can restore it.</p>
       <label class="field"><span class="label">Type the mod's name to confirm</span>
         <input id="modal-confirm" class="input" autocomplete="off" value="${escape(current.typed)}" /></label>
@@ -2308,6 +2368,7 @@ function showSettings(): void {
     state.accountNote = null;
   }
   render();
+  void readUsage().then(render);
 }
 
 async function loadMods(): Promise<void> {
@@ -2343,15 +2404,6 @@ function restoreLibrary(): void {
   }
 }
 
-/** Fetch files for every mod in the background, a few at a time, so opening one is instant. */
-async function prefetchFiles(): Promise<void> {
-  const queue = allEntries().filter((entry) => canManage(entry.id)).map((entry) => entry.id);
-  const worker = async () => {
-    for (let id = queue.shift(); id !== undefined; id = queue.shift()) await fetchSlot(id, "files");
-  };
-  await Promise.all(Array.from({ length: PREFETCH_AT_ONCE }, worker));
-}
-
 let libraryTicket = 0;
 
 /** One batched read of every mod. This runs at launch and when asked for, not when switching. */
@@ -2381,7 +2433,6 @@ async function loadLibrary(): Promise<void> {
   }
   state.loading = false;
   render();
-  if (!state.libraryError) void prefetchFiles();
   void openTabData();
 }
 
@@ -2392,12 +2443,121 @@ async function fetchSlot(id: number, key: SlotKey): Promise<void> {
   slot.busy = true;
   slot.error = "";
   try {
-    slot.value = await invoke(COMMANDS[key], { modId: id });
+    if (key === "files") {
+      const page = await invoke<FilePage>("mod_files", { modId: id, offset: 0, live: liveFiles(id) });
+      data.files.value = page.files;
+      data.filesTotal = page.total;
+      data.filesNext = page.next;
+    } else if (key === "comments") {
+      const page = await invoke<CommentPage>("mod_comments", { modId: id, offset: 0 });
+      data.comments.value = page.comments;
+      data.commentsNext = page.next;
+    } else {
+      slot.value = await invoke(COMMANDS[key], { modId: id });
+    }
   } catch (error) {
     slot.error = String(error);
   }
   slot.busy = false;
   if (cache.get(id) === data && state.selectedId === id && state.view === "mod") render();
+}
+
+function liveFiles(id: number): number[] {
+  return state.infos[id]?.platforms.map((p) => p.file_id) ?? [];
+}
+
+async function moreFiles(id: number): Promise<void> {
+  const data = dataFor(id);
+  const offset = data.filesNext;
+  if (offset === null || data.files.busy) return;
+  data.files.busy = true;
+  render();
+  try {
+    const page = await invoke<FilePage>("mod_files", { modId: id, offset, live: [] });
+    const known = new Set(data.files.value?.map((file) => file.id));
+    data.files.value = [...(data.files.value ?? []), ...page.files.filter((file) => !known.has(file.id))].sort((a, b) => b.id - a.id);
+    data.filesTotal = page.total;
+    data.filesNext = page.next;
+  } catch (error) {
+    state.note = { ok: false, text: String(error) };
+  }
+  data.files.busy = false;
+  render();
+}
+
+async function moreComments(id: number): Promise<void> {
+  const data = dataFor(id);
+  const offset = data.commentsNext;
+  if (offset === null || data.comments.busy) return;
+  data.comments.busy = true;
+  render();
+  try {
+    const page = await invoke<CommentPage>("mod_comments", { modId: id, offset });
+    const known = new Set(data.comments.value?.map((comment) => comment.id));
+    data.comments.value = [...(data.comments.value ?? []), ...page.comments.filter((comment) => !known.has(comment.id))];
+    data.commentsNext = page.next;
+  } catch (error) {
+    state.note = { ok: false, text: String(error) };
+  }
+  data.comments.busy = false;
+  render();
+}
+
+/** Refresh can't be pressed again straight away. */
+function coolDown(which: "all" | "mod"): void {
+  state.cooling[which] = true;
+  window.setTimeout(() => {
+    state.cooling[which] = false;
+    render();
+  }, REFRESH_SECONDS * 1000);
+}
+
+function waiting(): boolean {
+  return state.waitUntil > Date.now();
+}
+
+function secondsLeft(): number {
+  return Math.max(Math.ceil((state.waitUntil - Date.now()) / 1000), 1);
+}
+
+let waitClock = 0;
+
+/** Show how long mod.io's limit is holding things up, then pick up what it stopped. */
+function startWait(seconds: number): void {
+  state.waitUntil = Math.max(state.waitUntil, Date.now() + seconds * 1000);
+  window.clearInterval(waitClock);
+  waitClock = window.setInterval(() => {
+    if (waiting()) {
+      const left = rail.querySelector("#wait-seconds");
+      if (left) left.textContent = String(secondsLeft());
+      return;
+    }
+    window.clearInterval(waitClock);
+    state.waitUntil = 0;
+    render();
+    if (state.libraryError) void loadLibrary();
+    else void openTabData();
+  }, 1000);
+  render();
+}
+
+async function readUsage(): Promise<void> {
+  try {
+    state.usage = await invoke<Usage | null>("api_usage");
+  } catch {
+    state.usage = null;
+  }
+}
+
+/** The numbers are local, so reading them costs mod.io nothing. */
+function paintUsage(): void {
+  const usage = state.usage;
+  const label = main.querySelector("#usage-count");
+  const meter = main.querySelector<HTMLElement>("#usage-meter");
+  if (!usage || !label || !meter) return;
+  label.textContent = `${count(usage.requests)} of ${count(usage.request_limit)}`;
+  meter.setAttribute("aria-valuenow", String(usage.requests));
+  meter.querySelector("i")!.style.width = `${Math.min((usage.requests / usage.request_limit) * 100, 100)}%`;
 }
 
 async function fetchReport(id: number): Promise<void> {
@@ -2465,7 +2625,7 @@ async function refreshMod(id: number): Promise<void> {
   state.refreshing = false;
   await refreshPending();
   render();
-  await Promise.all([openTabData(), fetchSlot(id, "files"), reloadCook(id)]);
+  await Promise.all([openTabData(), reloadCook(id)]);
 }
 
 let pendingTicket = 0;
@@ -2543,14 +2703,21 @@ async function publishFile(fileId: number): Promise<void> {
   if (!yes) return;
   await act("That file is live.", async () => {
     await invoke("publish_file", { modId: id, fileId });
+    state.pickedFiles.delete(fileId);
     await showChange(id);
-    await reloadSlot(id, "events");
+    dataFor(id).events = {};
   });
+  void openTabData();
 }
 
 function dropFiles(id: number, ids: number[]): void {
-  const slot = dataFor(id).files;
-  if (slot.value) slot.value = slot.value.filter((file) => !ids.includes(file.id));
+  const data = dataFor(id);
+  const slot = data.files;
+  if (slot.value) {
+    const before = slot.value.length;
+    slot.value = slot.value.filter((file) => !ids.includes(file.id));
+    data.filesTotal -= before - slot.value.length;
+  }
   ids.forEach((file) => state.pickedFiles.delete(file));
 }
 
@@ -2645,7 +2812,12 @@ async function removeMedia(id: number, media: Partial<Record<"images" | "youtube
   if (!yes) return;
   await act("Removed.", async () => {
     await invoke("remove_media", { modId: id, media: { images: [], youtube: [], sketchfab: [], ...media } });
-    await showChange(id);
+    const info = state.infos[id];
+    if (!info) return;
+    info.images = info.images.filter((image) => !media.images?.includes(image.filename));
+    info.youtube = info.youtube.filter((url) => !media.youtube?.includes(url));
+    info.sketchfab = info.sketchfab.filter((url) => !media.sketchfab?.includes(url));
+    saveLibrary();
   });
 }
 
@@ -2682,7 +2854,8 @@ async function addMetadata(id: number): Promise<void> {
   const { key, value } = state.metadataDraft;
   const added = await act("Metadata added.", async () => {
     await invoke("add_metadata", { modId: id, key, value });
-    await reloadSlot(id, "metadata");
+    const slot = dataFor(id).metadata;
+    slot.value = [...(slot.value ?? []), { key, value }];
   });
   if (added) {
     state.metadataDraft = { key: "", value: "" };
@@ -2749,11 +2922,11 @@ async function closeMod(): Promise<void> {
 }
 
 async function setupLocal(entry: Entry): Promise<void> {
-  await act("Plugin set up in your modkit.", async () => {
+  const done = await act("Plugin set up in your modkit.", async () => {
     await invoke("retry_setup", { modId: entry.id, kind: entry.kind });
     await loadMods();
   });
-  await offerRestart(entry.name);
+  if (done) await offerRestart(entry.name);
 }
 
 /* Source plugins */
@@ -2944,18 +3117,23 @@ async function afterAccountChange(): Promise<void> {
 async function saveSettings(): Promise<void> {
   const { project, engine, stage, username } = state.settingsDraft;
   const settings = { project: project.trim(), engine: engine.trim(), stage: stage.trim(), username: username.trim() };
+  const before = state.settings;
   try {
+    const check = await invoke<FolderCheck | null>("check_folders", { project: settings.project, engine: settings.engine });
+    settings.engine = check?.engine ?? settings.engine;
     await invoke("save_settings", { settings });
-    if (settings.project !== state.settings.project) {
+    if (settings.project !== before.project) {
       cookViews.clear();
       state.selectedId = null;
     }
     state.settings = settings;
     state.settingsDraft = { ...settings };
     await loadMods();
-    state.settingsNote = { ok: true, text: "Settings saved." };
+    state.settingsNote = check?.problems.length
+      ? { ok: false, text: `Settings saved, but check them. ${check.problems.join(" ")}` }
+      : { ok: true, text: "Settings saved." };
     render();
-    await afterAccountChange();
+    if (settings.project !== before.project || settings.username !== before.username) await loadLibrary();
     return;
   } catch (error) {
     state.settingsNote = { ok: false, text: String(error) };
@@ -3031,13 +3209,14 @@ async function installUpdate(): Promise<void> {
 
 async function saveUsername(): Promise<void> {
   const settings = { ...state.settings, username: state.settingsDraft.username.trim() };
+  const changed = settings.username !== state.settings.username;
   try {
     await invoke("save_settings", { settings });
     state.settings = settings;
     state.settingsDraft.username = settings.username;
     state.accountNote = { ok: true, text: "Username saved." };
     render();
-    await afterAccountChange();
+    if (changed) await loadLibrary();
     return;
   } catch (error) {
     state.accountNote = { ok: false, text: String(error) };
@@ -3119,6 +3298,7 @@ async function handleClick(event: MouseEvent): Promise<void> {
   if (data.download) return void downloadSource(Number(data.download));
   if (data.page) {
     state.source.offset = Math.max(0, state.source.offset + Number(data.page));
+    state.source.note = null;
     main.scrollTop = 0;
     return void loadSource();
   }
@@ -3142,7 +3322,8 @@ async function handleClick(event: MouseEvent): Promise<void> {
     const dependency = Number(data.removeDependency);
     return void act("Dependency removed.", async () => {
       await invoke("remove_dependency", { modId: id, dependency });
-      await reloadSlot(id, "deps");
+      const slot = dataFor(id).deps;
+      slot.value = slot.value?.filter((mod) => mod.id !== dependency);
     });
   }
   if (data.removeMetadata) {
@@ -3150,7 +3331,8 @@ async function handleClick(event: MouseEvent): Promise<void> {
     if (pair) {
       void act("Metadata removed.", async () => {
         await invoke("remove_metadata", { modId: id, key: pair.key, value: pair.value });
-        await reloadSlot(id, "metadata");
+        const slot = dataFor(id).metadata;
+        slot.value = slot.value?.filter((item) => item !== pair);
       });
     }
     return;
@@ -3221,19 +3403,29 @@ async function handleClick(event: MouseEvent): Promise<void> {
     case "new-mod": state.view = "create"; state.createError = ""; return render();
     case "toggle-others": state.showOthers = !state.showOthers; return renderRail();
     case "refresh-all":
+      if (state.cooling.all || waiting()) return;
+      coolDown("all");
       cache.clear();
       for (const [modId, cook] of cookViews) {
         if (modId !== id && !selectionTimers.has(modId)) cook.report = null;
       }
       if (id) void reloadCook(id);
       return void loadLibrary();
-    case "refresh-mod": return void refreshMod(id);
+    case "refresh-mod":
+      if (state.cooling.mod || waiting()) return;
+      coolDown("mod");
+      return void refreshMod(id);
     case "source":
       state.view = "source";
-      return void loadSource();
+      state.source.note = null;
+      return state.source.mods.length ? render() : void loadSource();
     case "stage": return void startRun(stage);
     case "publish": return void startRun(publish);
-    case "more-files": state.filesShown += FILES_SHOWN; return render();
+    case "more-files":
+      state.filesShown += FILES_SHOWN;
+      if (dataFor(id).filesNext !== null && matchingFiles(dataFor(id).files.value ?? []).length < state.filesShown) return void moreFiles(id);
+      return render();
+    case "more-comments": return void moreComments(id);
     case "delete-picked": return void deleteFiles([...state.pickedFiles]);
     case "save-page": return entry ? void savePage(entry) : undefined;
     case "reset-page": drafts.delete(id); return render();
@@ -3319,6 +3511,14 @@ async function handleClick(event: MouseEvent): Promise<void> {
       const folder = await open({ directory: true, title: "Choose your modkit folder" });
       if (typeof folder === "string") {
         state.settingsDraft.project = folder;
+        render();
+      }
+      return;
+    }
+    case "browse-engine": {
+      const folder = await open({ directory: true, title: "Choose the Engine folder inside UE_5.1" });
+      if (typeof folder === "string") {
+        state.settingsDraft.engine = folder;
         render();
       }
       return;
@@ -3411,13 +3611,14 @@ app.addEventListener("change", (event) => {
   if (input.id === "file-filter") {
     state.fileFilter = input.value;
     state.filesShown = FILES_SHOWN;
+    // Only what can be seen should be deleted.
+    state.pickedFiles.clear();
     render();
   }
   if (input.id === "pick-all" && state.selectedId) {
     const entry2 = selectedEntry();
     const live = new Set(entry2?.info?.platforms.map((p) => p.file_id));
-    const files = (dataFor(state.selectedId).files.value ?? [])
-      .filter((f) => state.fileFilter === "all" || f.platforms.includes(state.fileFilter))
+    const files = matchingFiles(dataFor(state.selectedId).files.value ?? [])
       .slice(0, state.filesShown)
       .filter((f) => !live.has(f.id));
     files.forEach((f) => (input.checked ? state.pickedFiles.add(f.id) : state.pickedFiles.delete(f.id)));
@@ -3460,17 +3661,19 @@ app.addEventListener("keydown", (event) => {
     if (id && input.id === "dependency-draft" && state.dependencyDraft.trim()) void addDependency(id);
     if (id && (input.id === "metadata-key" || input.id === "metadata-value") && state.metadataDraft.key.trim() && state.metadataDraft.value) void addMetadata(id);
     if (input.id === "token") void saveToken();
-    if (input.id === "modal-version") void saveFile();
+    if (input.id === "modal-version" && modalReady()) void saveFile();
     if (input.id === "modal-confirm" && modalReady()) void closeMod();
     if (commentKey && input.id === "modal-comment" && modalReady()) void saveComment();
     if (commentKey && input.id === "comment-draft") app.querySelector<HTMLElement>('[data-action="post-comment"]')?.click();
     if (commentKey && input.id === "reply-draft") app.querySelector<HTMLElement>('[data-action="post-reply"]')?.click();
   }
   const entry = selectedEntry();
-  if (entry && input.getAttribute("role") === "tab" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+  if (entry && input.getAttribute("role") === "tab" && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
     const tabs = tabsFor(entry);
-    const step = event.key === "ArrowRight" ? 1 : tabs.length - 1;
-    selectTab(tabs[(tabs.indexOf(activeTab(entry)) + step) % tabs.length]);
+    const at = tabs.indexOf(activeTab(entry));
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (at + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length;
+    event.preventDefault();
+    selectTab(tabs[next]);
     app.querySelector<HTMLElement>(`#tab-${state.tab}`)?.focus();
   }
 });
@@ -3598,7 +3801,7 @@ app.addEventListener("input", (event) => {
     searchTimer = window.setTimeout(() => {
       Object.assign(state.source, { offset: 0, note: null });
       void loadSource();
-    }, 300);
+    }, SEARCH_DELAY);
   }
   if (input.id.startsWith("draft-")) {
     const button = app.querySelector<HTMLButtonElement>('[data-action="create-mod"]');
@@ -3607,6 +3810,10 @@ app.addEventListener("input", (event) => {
 });
 
 await listen<Progress>("progress", ({ payload }) => {
+  if (payload.kind === "waiting") {
+    if (payload.seconds >= WAIT_SHOWN_FROM) startWait(payload.seconds);
+    return;
+  }
   const run = state.run;
   if (!run) return;
   switch (payload.kind) {
@@ -3628,6 +3835,8 @@ await listen<Progress>("progress", ({ payload }) => {
         changelogs.delete(run.modId);
         if (state.selectedId === run.modId) state.changelog = "";
       }
+      // Any run can change what's in a build, whether or not it finished.
+      dataFor(run.modId).reports = {};
       render();
       void loadBuilt(run.modId);
       if (payload.ok) void refreshAfterRun(run);
@@ -3641,7 +3850,7 @@ async function refreshAfterRun(run: Run): Promise<void> {
   await showChange(run.modId);
   await refreshPending();
   render();
-  await Promise.all([openTabData(), fetchSlot(run.modId, "files")]);
+  await openTabData();
 }
 
 /** Coming back from Unreal or Explorer means the files may have changed. */
@@ -3678,6 +3887,9 @@ try {
 }
 if (state.settings.project) render();
 else showSettings();
+window.setInterval(() => {
+  if (state.view === "settings") void readUsage().then(paintUsage);
+}, USAGE_SECONDS * 1000);
 void loadLibrary();
 if (state.autoUpdate) void checkForUpdate(true);
 getVersion().then((version) => {

@@ -6,6 +6,34 @@ Add your changes under Unreleased. When a version is released, that section take
 
 ## Unreleased
 
+### Added
+
+- Settings shows how many mod.io requests the app has used in the last minute.
+- Browse for the Unreal Engine folder, and a warning when a saved folder doesn't look right.
+
+### Changed
+
+- The app paces itself under mod.io's request limit. If mod.io ever asks it to wait, the sidebar counts down and the app carries on by itself.
+- Launching, refreshing and saving settings use far fewer mod.io requests. A launch no longer reads every mod's files and team.
+- Files and comments load a page at a time, with Show more for the rest.
+- Refresh rests for a few seconds after each click.
+- New app icon.
+- Publish and Stage stay on screen in a small window.
+- The mod.io username is only asked for when mod.io can't say who you are.
+
+### Fixed
+
+- The steps for making a mod.io token now match mod.io's current Personal access tokens page, and Open mod.io goes straight to it.
+- Token errors now say which boxes to tick on mod.io.
+- A publish can't start while an update is installing, which would have ended it.
+- Stopping a run no longer shows a failed step.
+- A build's size is read again after any run, not only a finished publish.
+- Changing the file filter clears your selection, so Delete can't include files you can't see.
+- Enter can't save a file with a blank version.
+- A failed set up no longer offers to restart Unreal.
+- Switching back to the app no longer runs UnrealPak.
+- An old error no longer stays on Browse source plugins after a good read.
+
 ## 0.3.0
 
 The first public release. If you have an older test build, install this one by hand once. After that it updates itself.

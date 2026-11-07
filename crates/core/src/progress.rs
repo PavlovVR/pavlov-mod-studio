@@ -48,6 +48,10 @@ pub enum Event {
         message: String,
         failure: Option<Failure>,
     },
+    /// Requests are held back for this long, by mod.io or by the app's own limit.
+    Waiting {
+        seconds: u64,
+    },
 }
 
 static CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -98,6 +102,7 @@ pub fn emit(event: Event) {
                     .iter()
                     .filter(|line| verbose || line.level == Level::Error)
                     .for_each(|line| println!("{}", line.text)),
+                Event::Waiting { seconds } => println!("waiting {seconds}s for mod.io"),
                 _ => {}
             }
         }

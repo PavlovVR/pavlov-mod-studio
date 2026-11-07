@@ -20,6 +20,7 @@ The order of a publish is defined in `pipeline.rs`: check the definition, bump t
 - **Headless Unreal:** `definition.rs` runs the Python in `crates/core/src/scripts/` through `UnrealEditor-Cmd.exe`, passing inputs by environment variable and reading a result file, because Unreal's exit code is unreliable. Each run is a fresh session, so a read after a write proves the value reached disk.
 - **Open Unreal:** `editor.rs` talks to a running editor through Python remote execution, which the modkit turns on in `DefaultEngine.ini`. An open editor locks a definition it has loaded, so a headless session can't save it, and the editor has to save the version itself. Cook and stage are fine with it open.
 - **Definition checks** read the `.uasset` name table directly (`definition.rs::has_name`), because reading a map property through Unreal's Python loads the whole map.
+- **Rate limits:** every request goes through `limits.rs`, from `api.rs::send`, so nothing can skip it. It keeps the app under 100 requests and 50 writes a minute, and after a 429 nothing is sent until the wait is over, even across a restart. Requests someone is waiting on fail straight away during a wait from mod.io, and the app shows a countdown through `Event::Waiting` and reloads what stopped. Long jobs sit it out. `Api::pages` reads a whole list, so it's only for lists that stay short: files and comments use `Api::page`, because a mod can have thousands. Team answers are kept in `access.json` for a week, because they'd otherwise cost a request per mod.
 - **Secrets:** the app encrypts the user's token with DPAPI in `app/src-tauri/src/lib.rs`. Credential Manager can't be used, because mod.io tokens exceed its 2560-byte limit.
 - **Updates:** Tauri's updater reads `latest.json` from the latest GitHub release. `scripts/update_manifest.py` writes it during a release. Windows ends the app the moment the installer starts, so `installUpdate` in `main.ts` must never run during a run. A build only produces update files with `tauri.release.conf.json`, so anyone can build without the signing key.
 
@@ -31,7 +32,7 @@ The look is neutral and serious and follows the Windows light or dark setting: g
 
 A run lives in the panel under the main view, which `renderRun()` updates on its own, so progress never disturbs what the user is typing.
 
-mod.io data is read once and kept. `library.rs::load_library` reads every mod in one batched request at launch, and `cache` in `main.ts` keeps each mod's files, comments and so on until a Refresh or a change. Switching mods must never fetch what's already held. Requests someone is waiting on use `Api::quick`, which fails in seconds, and long jobs keep `Api::new` and its patient retries.
+mod.io data is read once and kept. `library.rs::load_library` reads every mod in one batched request at launch, and nothing else is read until someone opens a mod. `cache` in `main.ts` keeps each mod's files, comments and so on until a Refresh or a change. Switching mods must never fetch what's already held. Requests someone is waiting on use `Api::quick`, which fails in seconds, and long jobs keep `Api::new` and its patient retries.
 
 Anything typed must live in `state`, because background results re-render the page. A Page draft that hasn't been changed must not outlive the data it was copied from, or a save could overwrite newer edits.
 
@@ -42,8 +43,9 @@ Learned from real API behaviour, so don't "fix" these:
 - Editing a mod is `POST /games/{id}/mods/{id}`, and it must be `multipart/form-data` even with no file, or mod.io refuses it, despite its docs. Use `api.rs::text_form`. Editing a file, such as `active=true` to make it live or roll back, is `PUT .../files/{id}`.
 - Attaching a finished upload to `POST .../files` must be `multipart/form-data`.
 - Parts must be exactly 50 MiB except the last. A duplicate range returns error 29015, which counts as already sent.
-- Personal tokens get 403 (11139) on `/me` and `/me/mods`, so ownership is enforced by mod.io on write, not checked first.
-- Tokens last a year. A bad or expired one is 401 (11005), which `library.rs::check_token` uses to test a token before saving it.
+- Personal tokens have been refused with 403 (11139) on `/me` and `/me/mods`, so ownership is enforced by mod.io on write, not checked first. Others read both, so `account_name` handles both. mod.io doesn't document 11139, and which tokens get it hasn't been pinned down.
+- Tokens are made on the Personal access tokens tab of `/me/access`, which replaces OAuth access. The form starts on Read only and 30 Days, so the steps in Settings ask for All my mods, User actions, Read, Write and 1 Year. A bad or expired token is 401 (11005), which `library.rs::check_token` uses to test a token before saving it. That check can't see what a token is allowed to do.
+- A token gets 120 requests a minute, 60 of them writes, on a rolling window, and failed requests count. A 429 carries `retry-after`, where 0 means wait 60 seconds, and 11009 means only that endpoint is limited. mod.io warns that carrying on after a 429 can get a token revoked.
 - The Quest client is platform `oculus`, and the Shack server is platform `mac`. The app shows the platform names, Windows, Linux, Oculus and Mac, with an icon marking servers.
 - Which mods are yours comes from matching a username from Settings against the author and team. If that isn't available, nothing is hidden.
 - Deleting a mod only closes it, and only the website can restore or permanently delete it. A live file can't be deleted (15009). The API can't change a team, so the app shows it read-only.
