@@ -345,6 +345,8 @@ const state = {
   hasToken: false,
   tokenBusy: false,
   autoUpdate: !readFlag(MANUAL_UPDATES_SETTING),
+  /** A development build or a copy started for testing, which never updates by itself. */
+  testCopy: false,
   update: { status: "idle" as UpdateStatus, version: "", percent: null as number | null, error: "" },
   settingsNote: null as Note | null,
   eula: null as Eula | null,
@@ -2538,7 +2540,9 @@ function updatesHtml(): string {
         <h2 class="font-semibold">Updates</h2>
         ${state.version ? `<p class="mt-0.5 text-[13px] text-ink-muted">Pavlov Mod Studio ${escape(state.version)}</p>` : ""}
       </div>
-      ${optionHtml("auto-update", "Update automatically", "Checks when the app starts, then installs any new version and reopens. It never interrupts a publish.", state.autoUpdate)}
+      ${state.testCopy
+        ? optionHtml("auto-update", "Update automatically", "Off in a copy started for testing, because an update would replace the installed app and close it.", false, true)
+        : optionHtml("auto-update", "Update automatically", "Checks when the app starts, then installs any new version and reopens. It never interrupts a publish.", state.autoUpdate)}
       ${updateStatusHtml()}
     </section>`;
 }
@@ -4487,7 +4491,11 @@ window.setInterval(() => {
   if (state.view === "settings") void readUsage().then(paintUsage);
 }, USAGE_SECONDS * 1000);
 if (!eulaLocked()) void loadLibrary();
-if (state.autoUpdate) void checkForUpdate(true);
+void invoke<boolean>("is_test_copy").catch(() => false).then((test) => {
+  state.testCopy = Boolean(test);
+  if (state.testCopy) render();
+  else if (state.autoUpdate) void checkForUpdate(true);
+});
 getVersion().then((version) => {
   state.version = version ?? "";
   if (state.view === "settings") render();

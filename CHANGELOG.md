@@ -11,6 +11,10 @@ Add your changes under Unreleased. When a version is released, that section take
 - A new app icon. Small sizes, such as the taskbar and title bar, show a close-up so it stays recognisable.
 - The window has its own title bar, so the app's name and buttons sit in one row instead of under the Windows one.
 
+### Fixed
+
+- A copy started for testing, such as a development build, no longer updates itself, which replaced the installed app and closed it.
+
 ## 0.4.2
 
 ### Added

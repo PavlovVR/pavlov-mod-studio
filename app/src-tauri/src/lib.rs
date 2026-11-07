@@ -839,18 +839,22 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-/// A second copy would keep its own count of mod.io requests and could publish the same mod at
-/// the same time. Development builds, and test runs given their own WebView2 folder, can sit
-/// beside an installed copy.
-fn one_copy_only() -> bool {
-    !cfg!(debug_assertions) && std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none()
+/// Development builds, and test runs given their own WebView2 folder, can sit beside an installed
+/// copy. A second copy of the installed app would keep its own count of mod.io requests and could
+/// publish the same mod at the same time, so only these may.
+///
+/// They also never update by themselves: an older test copy would install the latest release over
+/// the installed app, and the installer closes every copy, including one in the middle of a publish.
+#[tauri::command]
+fn is_test_copy() -> bool {
+    cfg!(debug_assertions) || std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
     // This has to be the first plugin, so a second copy stops before anything else starts.
-    if one_copy_only() {
+    if !is_test_copy() {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
             show_window(app);
         }));
@@ -870,6 +874,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            is_test_copy,
             load_settings,
             save_settings,
             read_eula,
